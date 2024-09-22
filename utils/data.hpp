@@ -68,6 +68,7 @@ namespace gpulike
         }
         result->data = (char *)malloc(sizeof(char) * data_size);
         j = 0;
+        int k;
         char *straddr = result->data;
         for (auto chunk : arrow_col->chunks())
         {
@@ -75,6 +76,7 @@ namespace gpulike
             for (int i = 0; i < string_arr->length(); i++)
             {
                 auto str = string_arr->GetString(i);
+                // std::cout << j << " " << str << "\n";
                 result->stringAddresses[i] = straddr;
                 straddr += str.size();
                 for (auto c : str)

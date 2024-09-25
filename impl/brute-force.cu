@@ -38,14 +38,15 @@ int main() {
   std::string dbDir = "/media/ajayakar/space/src/tpch/data/tables/scale-1.0/";
   std::string lineitem_file = dbDir + "lineitem.parquet";
 
-  auto lineitem_table = gpulike::getArrowTable(lineitem_file);
+  std::string txt_file = "/media/ajayakar/space/src/tpch/data/tables/scale-1.0/comments.txt"; 
+  
 
   // std::cout << lineitem_table->schema()->ToString() << "\n";
 
-  gpulike::StringColumn* comments_column = gpulike::read_string_column(lineitem_table, "comments");
+  gpulike::StringColumn* comments_column = gpulike::read_txt(txt_file);
 
   const std::string& main_string = comments_column->data;
-  size_t table_size = lineitem_table->num_rows();
+  size_t table_size = gpulike::read_txt_size(txt_file);
   size_t data_size = 0;
   for (int i=0; i<table_size; i++) data_size+=comments_column->sizes[i];
 

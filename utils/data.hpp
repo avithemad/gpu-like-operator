@@ -1,4 +1,6 @@
 #include <iostream>
+#include <fstream>
+#include <sstream>
 
 #include <arrow/io/api.h>
 #include <arrow/table.h>
@@ -84,6 +86,59 @@ namespace gpulike
                     result->data[j++] = c;
                 }
             }
+        }
+        return result;
+    }
+    StringColumn* read_txt(std::string filepath) {
+            std::ifstream file(filepath);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file: " << filepath << std::endl;
+            return nullptr;
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf(); // Read the file into the stringstream
+
+        file.close(); // Close the file
+        StringColumn *result = new StringColumn();
+        int total_comments = 0;
+        for (auto c: buffer.str()) {
+            if (c == '\n') total_comments++;
+        }
+        result->sizes = (int*)malloc(sizeof(int)*total_comments);
+        result->data = (char*)malloc(sizeof(char)*buffer.str().size());
+        result->stringAddresses = (char**)malloc(sizeof(char*)*total_comments);
+        int cur_size = 0, i=0, j=0;
+        char* init = result->data;
+        for (auto c: buffer.str()) {
+            if (c == '\n') {
+                result->sizes[i] = cur_size;
+                result->stringAddresses[i] = init;
+                cur_size=0;
+                i++;
+            } else {
+                cur_size++;
+            }
+            init++;
+            result->data[j] = c;
+            j++;
+        }
+        std::cout << "Total comments: " << total_comments << std::endl;
+        return result; // Return the contents as a string
+    }
+    int read_txt_size(std::string filepath) {
+        std::ifstream file(filepath);
+        if (!file.is_open()) {
+            std::cerr << "Faile to open: " << filepath <<std::endl;
+            return -1;
+        }
+        std::stringstream buffer;
+        buffer << file.rdbuf(); // Read the file into the stringstream
+
+        file.close(); // Close the file
+        int result = 0;
+        for (auto c: buffer.str()) {
+            if (c == '\n') result++;
         }
         return result;
     }

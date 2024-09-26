@@ -1,5 +1,6 @@
 #include "data.hpp"
 #include <iostream>
+#include <cassert>
 
 void CUDACHKERR() {
 
@@ -9,56 +10,35 @@ void CUDACHKERR() {
   }
 } 
 
-__global__ void gpu_brute_force(char* data, char** addresses, int* sizes, size_t table_size, int* matched_count) {
+__global__ void gpu_brute_force(char* data, int* offsets, int* sizes, size_t table_size, int* matched_count) {
   char* pattern = "packa";
   size_t p_size = 5;
   int tid = threadIdx.x + blockDim.x*blockIdx.x;
   if (tid >= table_size) return;
   // printf("GPU:%s\n", pattern);
-  bool matched = false;
-  for (int j=0; j<sizes[tid] - p_size; j++) {
-    bool m = true;
+  for (int j=0; j<sizes[tid] - p_size + 1; j++) {
+    bool matched = true;
     for (int k=0; k<p_size; k++) {
-      if (addresses[tid][k+j] != pattern[k]) {
-       m = false;
+      if (data[offsets[tid] + k + j] != pattern[k]) {
+       matched = false;
        break; 
       }
     }
-    if (m) {
-      matched = true;
+    if (matched) {
+      atomicAdd(matched_count, 1);
       break;
     }
   }
-  if (matched) {
-    atomicAdd(matched_count, 1);
-  }
 }
 
-int main() {
-  std::string dbDir = "/media/ajayakar/space/src/tpch/data/tables/scale-1.0/";
-  std::string lineitem_file = dbDir + "lineitem.parquet";
-
-  std::string txt_file = "/media/ajayakar/space/src/tpch/data/tables/scale-1.0/comments.txt"; 
-  
-
-  // std::cout << lineitem_table->schema()->ToString() << "\n";
-
-  gpulike::StringColumn* comments_column = gpulike::read_txt(txt_file);
-
-  const std::string& main_string = comments_column->data;
-  size_t table_size = gpulike::read_txt_size(txt_file);
-  size_t data_size = 0;
-  for (int i=0; i<table_size; i++) data_size+=comments_column->sizes[i];
-
-  std::string pattern = "packa";
+int cpu_brute_force(int table_size, gpulike::StringColumn* comments_column, std::string pattern) {
   int matched_rows = 0;
   // cpu side matching
   for (int i=0; i<table_size; i++) {
-    bool m = false;
-    for (int j=0; j<(comments_column->sizes[i] - pattern.size()); j++) {
+    for (int j=0; j<(comments_column->sizes[i] - pattern.size() + 1); j++) {
       bool matched = true;
       for (int k=0; k<(pattern.size()); k++) {
-        if (comments_column->stringAddresses[i][j+k]!=pattern[k]) 
+        if (comments_column->data[comments_column->offsets[i]+j+k]!=pattern[k]) 
         {
           matched = false;
           break;  
@@ -66,39 +46,59 @@ int main() {
 
       }
       if (matched) {
-        m = true;
+        matched_rows++;
         break;
       }
     }
-    if (m) {
-      // std::cout << "Match found at row: " << i << "\n";
-      matched_rows++;
-      // std::cout << "\n";
-    }
   }
+  return matched_rows;
+}
 
-  std::cout << "Total matched rows in CPU: " << matched_rows << "\n";
+int main(int argc, char* argv[]) {
+
+  if (argc < 2) {
+    std::cout << "Please provide path to string column file. eg: ./brute-force /media/db/comments.txt";
+  }
+  std::string txt_file = argv[1]; 
+
+  gpulike::StringColumn* comments_column = gpulike::read_txt(txt_file);
+  if (comments_column == nullptr) {
+    std::cout << "Unable to read comments columns, possibly no data in the file\n";
+    exit(0);
+  }
+  const std::string& main_string = comments_column->data;
+  size_t table_size = gpulike::read_txt_size(txt_file);
+  size_t data_size = 0;
+  for (int i=0; i<table_size; i++) data_size+=comments_column->sizes[i];
+
+  std::cout << "Total rows: " <<  table_size << "\n";
+
+  std::string pattern = "packa";
+  int cpu_matched_rows = cpu_brute_force(table_size, comments_column, "packa");
+  std::cout << "Total matched rows in CPU: " << cpu_matched_rows << "\n";
 
   std::cout << "Now brute forcing in GPU\n"; 
   int* d_sizes, *d_matched_count;
-  char** d_addresses;
+  int* d_offsets;
   char* d_data;
   cudaMalloc(&d_sizes, sizeof(int)*table_size);
   cudaMalloc(&d_matched_count, sizeof(int));
-  cudaMalloc(&d_addresses, sizeof(char*)*table_size);
+  cudaMalloc(&d_offsets, sizeof(int)*table_size);
   cudaMalloc(&d_data, sizeof(char)*data_size);
 
-  int z = 0;
   cudaMemcpy(d_sizes, comments_column->sizes, sizeof(int)*table_size, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_addresses, comments_column->stringAddresses, sizeof(char*)*table_size, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_matched_count, &z, sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_offsets, comments_column->offsets, sizeof(int)*table_size, cudaMemcpyHostToDevice);
   cudaMemcpy(d_data, comments_column->data, sizeof(char)*data_size, cudaMemcpyHostToDevice);
-  CUDACHKERR();
-  int TB = 32;
-  gpu_brute_force<<<std::ceil(table_size/TB), TB>>>(d_data, d_addresses, d_sizes, table_size, d_matched_count);
-  CUDACHKERR();
-  cudaMemcpy(&z, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
+  cudaMemset(d_matched_count, 0, sizeof(int));
   CUDACHKERR();
 
-  std::cout << "Result from GPU: " << z << "\n";
+  int TB = 32;
+  gpu_brute_force<<<std::ceil((float)table_size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, table_size, d_matched_count);
+  CUDACHKERR();
+  int gpu_matched_rows = 0;
+  cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
+  CUDACHKERR();
+  assert(gpu_matched_rows == cpu_matched_rows);
+
+  std::cout << "Result from GPU: " << gpu_matched_rows << "\n";
 }

@@ -57,8 +57,7 @@ __global__ void gpu_brute_force_Purr(char* data, int* offsets, int* sizes, size_
       if(pattern[k]=='['){
           int num=data[offsets[tid]+j+k-per]/BITS_PER_WORD;
           int den=data[offsets[tid]+j+k-per]%BITS_PER_WORD;
-            if(!(bitmasks1d[b*4 +num]>>(den) & 1)){
-            printf("%d\n",(int)(bitmasks1d[b*4 +num]>>(den) & 1));
+            if(!(bitmasks1d[b*4 +num]>>(den) & 1)){           
                 matched = false;
                 break;
             }
@@ -67,7 +66,7 @@ __global__ void gpu_brute_force_Purr(char* data, int* offsets, int* sizes, size_
         }
 
 
-      if (data[offsets[tid] + k + j-per] != pattern[k]) {
+      if (pattern[k]!='_' || data[offsets[tid] + k + j-per] != pattern[k]) {
        matched = false;
        break; 
       }
@@ -182,7 +181,7 @@ int cpu_brute_force_noVec(gpulike::StringColumn* comments_column, std::string pa
             continue;
         }
 
-        if (comments_column->data[comments_column->offsets[i]+j+k-per]!=pattern[k]) 
+        if (pattern[k]!='_' || comments_column->data[comments_column->offsets[i]+j+k-per]!=pattern[k]) 
         {
           matched = false;
           break;  
@@ -287,7 +286,7 @@ int main(int argc, char* argv[]) {
 
   int total_rows = bitmasks.size();
   int total_elements = h_flattened.size();
-  std::cout<<total_elements<<std::endl;
+
   cudaMalloc(&bitmasks1d, total_elements * sizeof(uint64_t));
 
   cudaMalloc(&d_sizes, sizeof(int)*comments_column->size);

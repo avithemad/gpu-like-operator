@@ -3,9 +3,7 @@
 #include <cassert>
 #include "cudautils.cuh"
 
-__global__ void gpu_brute_force(char* data, int* offsets, int* sizes, size_t table_size, int* matched_count) {
-  const char* pattern = "packa";
-  size_t p_size = 5;
+__global__ void gpu_brute_force(char* data, int* offsets, int* sizes, size_t table_size, char* pattern, int p_size, int* matched_count) {
   int tid = threadIdx.x + blockDim.x*blockIdx.x;
   if (tid >= table_size) return;
   // printf("GPU:%s\n", pattern);
@@ -48,9 +46,9 @@ int cpu_brute_force(gpulike::StringColumn* comments_column, std::string pattern)
 }
 
 int main(int argc, char* argv[]) {
-
-  if (argc < 2) {
-    std::cout << "Please provide path to string column file. eg: ./brute-force /media/db/comments.txt";
+  if (argc < 3)
+  {
+    std::cout << "Please provide path to string column file and pattern. eg: ./brute-force /media/db/comments.txt <like-pattern>";
   }
   std::string txt_file = argv[1]; 
 
@@ -65,8 +63,9 @@ int main(int argc, char* argv[]) {
 
   std::cout << "Total rows: " <<  comments_column->size << "\n";
 
-  std::string pattern = "packa";
-  int cpu_matched_rows = cpu_brute_force(comments_column, "packa");
+  const char* pattern = argv[2];
+  int p_size = ((std::string)pattern).size();
+  int cpu_matched_rows = cpu_brute_force(comments_column, pattern);
   std::cout << "Total matched rows in CPU: " << cpu_matched_rows << "\n";
 
   std::cout << "Now brute forcing in GPU\n"; 
@@ -85,7 +84,10 @@ int main(int argc, char* argv[]) {
   CUDACHKERR();
 
   int TB = 32;
-  gpu_brute_force<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_matched_count);
+  char* d_pattern;
+  cudaMalloc(&d_pattern, sizeof(char)*p_size);
+  cudaMemcpy(d_pattern, pattern, sizeof(char)*p_size, cudaMemcpyHostToDevice);
+  gpu_brute_force<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_pattern, p_size, d_matched_count);
   CUDACHKERR();
   int gpu_matched_rows = 0;
   cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);

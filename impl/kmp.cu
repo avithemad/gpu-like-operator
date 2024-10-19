@@ -13,11 +13,17 @@
 int cpu_kmp(gpulike::StringColumn* comments_column, std::string pattern, int* prefix){
     // q denotes the lenght of matched string
     int q=0,matched_rows = 0;
+    // base saves the progress of matched subpatterns split by %
+    int base=0;
     for(int i=0;i<comments_column->size;i++){
-        q=0;
+        q=0,base=0;
     for (int j=0; j<(comments_column->sizes[i]); j++) {
-    
-        while(q>0 && pattern[q]!=comments_column->data[comments_column->offsets[i]+j])
+        if(pattern[q]=='%')
+            {
+                q++;
+                base=q;
+            }
+        while(q>base && pattern[q]!=comments_column->data[comments_column->offsets[i]+j])
             {
                 q=prefix[q-1];
             }
@@ -38,9 +44,14 @@ __global__ void gpu_kmp(char* data, int* offsets, int* sizes, size_t table_size,
    
     int q=0;
     // const char* pattern = "a";
-    int m=0,per=0,p=0,b=0;
+    int m=0,per=0,p=0,b=0,base=0;
      for (int j=0; j<sizes[tid]; j++) {
-        while(q>0 && pattern[q]!=data[offsets[tid]+j])
+      if(pattern[q]=='%')
+            {
+                q++;
+                base=q;
+            }
+        while(q>base && pattern[q]!=data[offsets[tid]+j])
             {
                 q=prefix[q-1];
             }
@@ -60,9 +71,16 @@ int* compute_prefix(const std::string& pattern) {
     int* prefix = new int[m];  
     int k = 0;
     prefix[0] = 0;
-
-    for (int i = 1; i < m; ++i) {
-        while (k > 0 && pattern[k] != pattern[i]) {
+    int base=0;
+    for (int i = 1; i < m; i++) {
+        if(pattern[i]=='%'){
+              base=i+1;
+              i++;
+              k=i;
+              prefix[i]=i;
+              continue;
+          }
+        while (k > base && pattern[k] != pattern[i]) {
             k = prefix[k - 1];
         }
         if (pattern[k] == pattern[i]) {
@@ -263,13 +281,11 @@ int main(int argc, char* argv[]) {
 
   std::cout << "Total rows: " <<  comments_column->size << "\n";
 
-  std::string pattern = "ac";
+  std::string pattern = "ab%b";
   
   // ok cuda doesnt suppoer bitset so use uint
   std::vector<std::vector<uint64_t>> bitmasks=createBitmasks(pattern);
   int *prefix=compute_prefix(pattern);
-  std::cout<<prefix[0]<<std::endl;
-  std::cout<<prefix[1]<<std::endl;
   int cpu_matched_rows = cpu_kmp(comments_column, pattern,prefix);
 
 

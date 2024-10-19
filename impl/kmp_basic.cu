@@ -41,6 +41,36 @@ __global__ void gpu_kmp_basic(char *data,
   }
 }
 
+__global__ void gpu_kmp_pivoted(char **data,
+                                int *max_lens,
+                                char *pattern,
+                                int p_size,
+                                int *prefix_table,
+                                int *res)
+{
+  int i = 0, j = 0;
+  while (i < max_lens[blockIdx.x])
+  {
+    if (pattern[j] == data[blockIdx.x][i * blockDim.x + threadIdx.x])
+    {
+      j++;
+      i++;
+      if (j == p_size)
+      {
+        atomicAdd(res, 1);
+        return;
+      }
+    }
+    else
+    {
+      if (j != 0)
+        j = prefix_table[j];
+      else
+        i++;
+    }
+  }
+}
+
 int cpu_brute_force(gpulike::StringColumn *comments_column, std::string pattern)
 {
   int matched_rows = 0;
@@ -112,11 +142,12 @@ int main(int argc, char *argv[])
   const char *pattern = argv[2];
   int cpu_matched_rows = cpu_brute_force(comments_column, pattern);
 
-  int *d_sizes, *d_matched_count;
+  int *d_sizes, *d_matched_count, *d_res2;
   int *d_offsets;
   char *d_data;
   cudaMalloc(&d_sizes, sizeof(int) * comments_column->size);
   cudaMalloc(&d_matched_count, sizeof(int));
+  cudaMalloc(&d_res2, sizeof(int));
   cudaMalloc(&d_offsets, sizeof(int) * comments_column->size);
   cudaMalloc(&d_data, sizeof(char) * data_size);
 
@@ -124,28 +155,61 @@ int main(int argc, char *argv[])
   cudaMemcpy(d_offsets, comments_column->offsets, sizeof(int) * comments_column->size, cudaMemcpyHostToDevice);
   cudaMemcpy(d_data, comments_column->data, sizeof(char) * data_size, cudaMemcpyHostToDevice);
   cudaMemset(d_matched_count, 0, sizeof(int));
+  cudaMemset(d_res2, 0, sizeof(int));
   CUDACHKERR();
 
-  int TB = 32;
+  int TB = 256;
   int p_size = 0;
-  for (int i=0; pattern[i]!='\0'; i++) p_size++;
+  for (int i = 0; pattern[i] != '\0'; i++)
+    p_size++;
   char *d_pattern;
   cudaMalloc(&d_pattern, sizeof(char) * p_size);
   cudaMemcpy(d_pattern, pattern, sizeof(char) * p_size, cudaMemcpyHostToDevice);
-  int *prefix_table = (int*)malloc(sizeof(int)*p_size);
+  int *prefix_table = (int *)malloc(sizeof(int) * p_size);
   compute_prefix_table(pattern, p_size, prefix_table);
   std::cout << "prefix table:\n";
-  for (int i=0; i<p_size; i++) std::cout << pattern[i] << "\t"; std::cout << "\n";
-  for (int i=0; i<p_size; i++) std::cout << prefix_table[i] << "\t"; std::cout << "\n";
+  for (int i = 0; i < p_size; i++)
+    std::cout << pattern[i] << "\t";
+  std::cout << "\n";
+  for (int i = 0; i < p_size; i++)
+    std::cout << prefix_table[i] << "\t";
+  std::cout << "\n";
   int *d_prefix_table;
-  cudaMalloc(&d_prefix_table, sizeof(int)*p_size);
-  cudaMemcpy(d_prefix_table, prefix_table, sizeof(int)*p_size, cudaMemcpyHostToDevice);
+  cudaMalloc(&d_prefix_table, sizeof(int) * p_size);
+  cudaMemcpy(d_prefix_table, prefix_table, sizeof(int) * p_size, cudaMemcpyHostToDevice);
   gpu_kmp_basic<<<std::ceil((float)comments_column->size / (float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_pattern, p_size, d_prefix_table, d_matched_count);
   CUDACHKERR();
   int gpu_matched_rows = 0;
   cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
   CUDACHKERR();
+
+
+
   assert(gpu_matched_rows == cpu_matched_rows);
 
   std::cout << "Result from GPU: " << gpu_matched_rows << "\n";
+
+  std::cout << "Now running the pivoted kernel\n";
+  gpulike::StringColumnPivoted *col_piv = gpulike::convert_to_transpose(comments_column, TB);
+  char **d_data_piv, **h_data;
+  int *d_max_lens;
+  h_data = (char**)malloc(sizeof(char*)*col_piv->size);
+  char *d_char_data;
+  int total_data = 0;
+  for (int i=0; i<col_piv->size; i++) total_data += col_piv->max_lens[i];
+  cudaMalloc(&d_char_data, sizeof(char)*total_data*TB);
+  for (int i=0; i<col_piv->size; i++) {
+    h_data[i] = (i > 0 ? h_data[i-1] + col_piv->max_lens[i-1]*TB : d_char_data);
+    cudaMemcpy(h_data[i], col_piv->data[i], sizeof(char)*col_piv->max_lens[i]*TB, cudaMemcpyHostToDevice); 
+  }
+  cudaMalloc(&d_data_piv, sizeof(char*)*col_piv->size);
+  cudaMemcpy(d_data_piv, h_data, sizeof(char*)*col_piv->size, cudaMemcpyHostToDevice);
+  cudaMalloc(&d_max_lens, sizeof(int)*col_piv->size);
+  cudaMemcpy(d_max_lens, col_piv->max_lens, sizeof(int)*col_piv->size, cudaMemcpyHostToDevice);
+  CUDACHKERR();
+
+  gpu_kmp_pivoted<<<col_piv->size, TB>>>(d_data_piv, d_max_lens, d_pattern, p_size, d_prefix_table, d_res2 );
+  CUDACHKERR();
+  cudaMemcpy(&gpu_matched_rows, d_res2, sizeof(int), cudaMemcpyDeviceToHost);
+  std::cout << "Result from pivoted layout: " << gpu_matched_rows << "\n";
 }

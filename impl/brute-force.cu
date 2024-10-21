@@ -3,12 +3,29 @@
 #include <cassert>
 #include "cudautils.cuh"
 
-__global__ void gpu_brute_force(char* data, int* offsets, int* sizes, size_t table_size, int* matched_count) {
-  const char* pattern = "packa";
-  size_t p_size = 5;
+__global__ void gpu_brute_force(char* data, int* offsets, int* sizes, size_t table_size, char* pattern, int p_size, int* matched_count) {
   int tid = threadIdx.x + blockDim.x*blockIdx.x;
   if (tid >= table_size) return;
   // printf("GPU:%s\n", pattern);
+  bool done = false;
+  for (int j=0; j<sizes[tid] - p_size + 1; j++) {
+    bool matched = true;
+    for (int k=0; k<p_size; k++) {
+      if (data[offsets[tid] + k + j] != pattern[k]) {
+       matched = false;
+      //  break; 
+      }
+    }
+    if (matched) {
+      if (!done)
+      atomicAdd(matched_count, 1);
+      done = true;
+    }
+  }
+}
+__global__ void gpu_brute_force_limited(char* data, int* offsets, int* sizes, size_t table_size, char* pattern, int p_size, int* matched_count) {
+  int tid = threadIdx.x + blockDim.x*blockIdx.x;
+  if (tid >= table_size) return;
   for (int j=0; j<sizes[tid] - p_size + 1; j++) {
     bool matched = true;
     for (int k=0; k<p_size; k++) {
@@ -48,9 +65,9 @@ int cpu_brute_force(gpulike::StringColumn* comments_column, std::string pattern)
 }
 
 int main(int argc, char* argv[]) {
-
-  if (argc < 2) {
-    std::cout << "Please provide path to string column file. eg: ./brute-force /media/db/comments.txt";
+  if (argc < 3)
+  {
+    std::cout << "Please provide path to string column file and pattern. eg: ./brute-force /media/db/comments.txt <like-pattern>";
   }
   std::string txt_file = argv[1]; 
 
@@ -65,16 +82,18 @@ int main(int argc, char* argv[]) {
 
   std::cout << "Total rows: " <<  comments_column->size << "\n";
 
-  std::string pattern = "packa";
-  int cpu_matched_rows = cpu_brute_force(comments_column, "packa");
+  const char* pattern = argv[2];
+  int p_size = ((std::string)pattern).size();
+  int cpu_matched_rows = cpu_brute_force(comments_column, pattern);
   std::cout << "Total matched rows in CPU: " << cpu_matched_rows << "\n";
 
   std::cout << "Now brute forcing in GPU\n"; 
-  int* d_sizes, *d_matched_count;
+  int* d_sizes, *d_matched_count, *d_matched_count_2;
   int* d_offsets;
   char* d_data;
   cudaMalloc(&d_sizes, sizeof(int)*comments_column->size);
   cudaMalloc(&d_matched_count, sizeof(int));
+  cudaMalloc(&d_matched_count_2, sizeof(int));
   cudaMalloc(&d_offsets, sizeof(int)*comments_column->size);
   cudaMalloc(&d_data, sizeof(char)*data_size);
 
@@ -82,10 +101,15 @@ int main(int argc, char* argv[]) {
   cudaMemcpy(d_offsets, comments_column->offsets, sizeof(int)*comments_column->size, cudaMemcpyHostToDevice);
   cudaMemcpy(d_data, comments_column->data, sizeof(char)*data_size, cudaMemcpyHostToDevice);
   cudaMemset(d_matched_count, 0, sizeof(int));
+  cudaMemset(d_matched_count_2, 0, sizeof(int));
   CUDACHKERR();
 
-  int TB = 32;
-  gpu_brute_force<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_matched_count);
+  int TB = 256;
+  char* d_pattern;
+  cudaMalloc(&d_pattern, sizeof(char)*p_size);
+  cudaMemcpy(d_pattern, pattern, sizeof(char)*p_size, cudaMemcpyHostToDevice);
+  gpu_brute_force<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_pattern, p_size, d_matched_count);
+  gpu_brute_force_limited<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_pattern, p_size, d_matched_count_2);
   CUDACHKERR();
   int gpu_matched_rows = 0;
   cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);

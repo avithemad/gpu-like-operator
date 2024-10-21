@@ -14,6 +14,12 @@ namespace gpulike
     StringColumn() {}
   };
 
+  /**
+   * First chunk will be a 2D character matrix with warp_size * max_lens, number of elements.
+   * ith string can be accesses as follows
+   * for j = 0 to max_lens[warp_size]
+   *   data[i/warp_size][j*warp_size + i%warp_size]
+   */
   struct StringColumnPivoted
   {
     char **data;
@@ -70,6 +76,25 @@ namespace gpulike
           std::cout << comments_pivoted->data[i][j];
       }
       std::cout << "\n\n";
+    }
+  }
+  void print_pivoted_to_normal(StringColumnPivoted *comments_pivoted)
+  {
+    for (int i = 0; i < comments_pivoted->size; i++)
+    {
+      for (int j = 0; j < comments_pivoted->warp_size; j++)
+      {
+        for (int k = 0; k < comments_pivoted->max_lens[i]; k++)
+        {
+          char c = comments_pivoted->data[i][k * comments_pivoted->warp_size + j];
+          if (c == '\0')
+          {
+            break;
+          }
+          std::cout << c;
+        }
+        std::cout << "\n";
+      }
     }
   }
 

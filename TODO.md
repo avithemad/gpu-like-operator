@@ -28,4 +28,13 @@ Things yet to try
 - Increase the pivot size to see if there are reductions in load instructions
 
 
+## October 21
+
+- Shared memory impl (brute + kmp)
+- Clean up %, _ [] imple for brute, and % in kmp, make pattern dynamic. (merge to main after this)
+- Get some tests for these impl.
+- Fix the normal string matching ('abc', string must start with abc)
+- Implement select *, select rid queries. (ask before impl) 
+- _ and [] in KMP?
+
 

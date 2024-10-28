@@ -7,3 +7,9 @@ void CUDACHKERR() {
     std::cout << "CUDA ERROR: " << cudaGetErrorString(err) << "\n"; 
   }
 } 
+
+void cudaCheckErrors(cudaError_t err) {
+  if (err != cudaSuccess) {
+    std::cout << "CUDA ERROR: " << cudaGetErrorString(err) << "\n"; 
+  }
+}

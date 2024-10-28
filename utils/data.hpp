@@ -29,6 +29,32 @@ namespace gpulike
     StringColumnPivoted() {}
   };
 
+  struct StringColumnPivotedK {
+    char **data;
+    int max_len;
+    int size;
+    StringColumnPivotedK() {}
+  };
+
+  StringColumnPivotedK *convert_to_pivotedk(StringColumn *col) {
+    int max_len = 0;
+    for (int i=0; i<col->size; i++) max_len = max(max_len, col->sizes[i]);
+    StringColumnPivotedK* res = new StringColumnPivotedK();
+    res->data = (char**)malloc(sizeof(char*)*max_len);
+    for (int i=0; i<max_len; i++) {
+      res->data[i] = (char*)malloc(sizeof(char)*col->size);
+      memset(res->data[i], '\0', sizeof(char)*col->size);
+    }
+    res->size = col->size;
+    res->max_len = max_len;
+    for (int i=0; i<col->size; i++) {
+      for (int j=0; j<col->sizes[i]; j++) {
+        res->data[j][i] = col->data[col->offsets[i] + j];
+      }
+    }
+    return res;
+  }
+
   StringColumnPivoted *convert_to_transpose(StringColumn *column_data, int warp_size)
   {
     int total_size = std::ceil((float)column_data->size / (float)warp_size);

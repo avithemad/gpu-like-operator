@@ -115,12 +115,12 @@ bool valid(char c)
 }
 char to_lower(char c)
 {
-  if ((c >= 'a' && c <= 'z'))
-    return c;
+  if ((c >= 'A' && c <= 'Z'))
+    return (c - 'A') + 'a';
   else
   {
-    return (c - 'A') + 'a';
-  }
+    return c;
+  } 
 }
 struct ThreadArgs
 {
@@ -241,22 +241,22 @@ int main(int argc, char *argv[])
   std::cout << "Executing brute force on CPU:\n";
 
   auto start = std::chrono::high_resolution_clock::now();
-  auto cpu_matched = cpu_brute_force(comments_column, pattern);
+  int cpu_matched;
+  // cpu_matched = cpu_brute_force(comments_column, pattern);
   auto stop = std::chrono::high_resolution_clock::now();
   std::cout << "Matches in cpu: " << cpu_matched << "\n";
   auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
   std::cout << "Time taken in cpu: " << duration.count() << " ms\n";
 
   start = std::chrono::high_resolution_clock::now();
-  std::string k = "ab";
   for (int i = 0; i < n; i++)
   {
     auto off = comments_column->offsets[i];
     for (int j = 1; j < comments_column->sizes[i]; j++)
     {
       char prev = comments_column->data[off + j - 1], curr = comments_column->data[off + j];
-        k[0] = prev;
-        k[1] = curr;
+      prev = to_lower(prev); curr = to_lower(curr);
+      if (valid(prev) && valid(curr))
         mp_t[(prev)*256 + (curr)] = 1;
     }
   }
@@ -278,12 +278,9 @@ int main(int argc, char *argv[])
     for (int j = 1; j < comments_column->sizes[i]; j++)
     {
       char prev = comments_column->data[off + j - 1], curr = comments_column->data[off + j];
+      prev = to_lower(prev); curr = to_lower(curr);
       if (valid(prev) && valid(curr))
-      {
-        k[0] = prev;
-        k[1] = curr;
         bitmaps[mp_t[(prev)*256 + (curr)]][i / 64] |= ((uint64_t)1 << (63 - (i % 64)));
-      }
     }
   }
   stop = std::chrono::high_resolution_clock::now();
@@ -295,6 +292,7 @@ int main(int argc, char *argv[])
   for (int i = 1; i < p_size; i++)
   {
     char prev = pattern[i - 1], curr = pattern[i];
+    prev = to_lower(prev); curr = to_lower(curr);
     int key = prev * 256 + curr; // ascii domain has 256 characters.
     maps_to_consider.insert(mp_t[key]);
   }

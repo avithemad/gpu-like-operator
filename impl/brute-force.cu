@@ -117,4 +117,3 @@ int main(int argc, char* argv[]) {
   assert(gpu_matched_rows == cpu_matched_rows);
 
   std::cout << "Result from GPU: " << gpu_matched_rows << "\n";
-}

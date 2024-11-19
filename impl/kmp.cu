@@ -10,34 +10,70 @@
 
 
 
-int cpu_kmp(gpulike::StringColumn* comments_column, std::string pattern, int* prefix){
-    // q denotes the lenght of matched string
-    int q=0,matched_rows = 0;
-    // base saves the progress of matched subpatterns split by %
-    int base=0;
-    for(int i=0;i<comments_column->size;i++){
-        q=0,base=0;
-    for (int j=0; j<(comments_column->sizes[i]); j++) {
-        if(pattern[q]=='%')
-            {
+int cpu_kmp(gpulike::StringColumn* comments_column, std::string pattern, int* prefix) {
+    // Check if the first character is '%' or not
+    bool starts_with_percent = (pattern[0] == '%');
+    int matched_rows = 0;
+
+    // If the pattern does not start with '%', perform a prefix match only
+    if (!starts_with_percent) {
+        for (int i = 0; i < comments_column->size; i++) {
+            int q = 0; // Keeps track of the prefix length
+
+            // Loop through the first part of the string
+            for (int j = 0; j < comments_column->sizes[i]; j++) {
+                while (q > 0 && pattern[q] != comments_column->data[comments_column->offsets[i] + j]) {
+                    q = prefix[q - 1];
+                }
+                if (pattern[q] == comments_column->data[comments_column->offsets[i] + j]) {
+                    q++;
+                }
+                if (q == pattern.size()) {
+                    matched_rows++;
+                    break;
+                }
+                // If the prefix doesn't match at the start, stop early
+                if (j == pattern.size() - 1 && q < pattern.size()) {
+                    break;
+                }
+            }
+        }
+        return matched_rows; // No need for further checks
+    }
+
+    // Standard KMP-based matching for patterns with '%'
+    int q = 0, base = 0;
+    for (int i = 0; i < comments_column->size; i++) {
+        q = 0;
+        base = 0;
+        for (int j = 0; j < comments_column->sizes[i]; j++) {
+            // Handle '%' wildcard
+            if (pattern[q] == '%') {
                 q++;
-                base=q;
+                base = q; // Reset base to the new start after '%'
             }
-        while(q>base && pattern[q]!=comments_column->data[comments_column->offsets[i]+j])
-            {
-                q=prefix[q-1];
+
+            // Use prefix array to backtrack on mismatch
+            while (q > base && pattern[q] != comments_column->data[comments_column->offsets[i] + j]) {
+                q = prefix[q - 1];
             }
-        if(pattern[q]==comments_column->data[comments_column->offsets[i]+j])
-            q++;
-        if(q==pattern.size()){
-            matched_rows++;
-            // std::cout<<"found at "<<j-q;
-            break;
+
+            // Advance match position if characters match
+            if (pattern[q] == comments_column->data[comments_column->offsets[i] + j]) {
+                q++;
+            }
+
+            // If full pattern matches, count and break
+            if (q == pattern.size()) {
+                matched_rows++;
+                break;
+            }
         }
     }
-    }
+
     return matched_rows;
 }
+
 __global__ void gpu_kmp(char* data, int* offsets, int* sizes, size_t table_size, int* matched_count,int* prefix, char* pattern,int p_size) {
     int tid = threadIdx.x + blockDim.x*blockIdx.x;
     if(tid >= table_size) return;
@@ -91,55 +127,99 @@ int* compute_prefix(const std::string& pattern) {
 
     return prefix; 
 }
-__global__ void gpu_brute_force_Purr(char* data, int* offsets, int* sizes, size_t table_size, int* matched_count,u_int64_t* bitmasks1d, char* pattern) {
-  // const char* pattern = "%are%the%";
-  // size_t p_size = 9;
-  // int m=0,per=0,p=3,b=0;
-  size_t p_size = 1;
-  int m=0,per=0,p=0,b=0;
-  // printf("hello");
-  // m for store the index upto which subpattern matched 
-  // p for not including the count of %
-  // per to account for the increment in k dues to %
-  int tid = threadIdx.x + blockDim.x*blockIdx.x;
-  if (tid >= table_size) return;
-  // printf("GPU:%s\n", pattern);
+__global__ void gpu_brute_force_Purr(
+    char* data, int* offsets,
+    int* sizes, size_t table_size, 
+    int* matched_count, char* pattern,
+    int p_size, int per_count, 
+    uint64_t* bitmasks1d) {
 
-  // limit checking of string to total length -pattern length
-  for (int j=0; j<sizes[tid] - p_size + p + 1; j++) {
-    bool matched = true;b=0;
-    for (int k=0+m; k<p_size; k++) {
-      if(pattern[k]=='%'){
-            m=k+1;
-            per++;
-            continue;
-        }
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid >= table_size) return;
 
-      // implementation of [] using 1dbitmasks
-      if(pattern[k]=='['){
-          int num=data[offsets[tid]+j+k-per]/BITS_PER_WORD;
-          int den=data[offsets[tid]+j+k-per]%BITS_PER_WORD;
-            if(!(bitmasks1d[b*4 +num]>>(den) & 1)){
-            printf("%d\n",(int)(bitmasks1d[b*4 +num]>>(den) & 1));
+    int match_start_index = 0, pattern_offset = 0, mask_index = 0;
+    int block_index, position_within_block;
+
+    // Check if the first character is '%' or not
+    bool starts_with_percent = (pattern[0] == '%');
+
+    // If pattern does not start with '%', perform a prefix match only
+    if (!starts_with_percent) {
+        bool matched = true;
+        for (int pattern_index = 0; pattern_index < p_size; pattern_index++) {
+            char current_pattern = pattern[pattern_index];
+
+            // Handle character ranges ([]) using bitmasks
+            if (current_pattern == '[') {
+                block_index = data[offsets[tid] + pattern_index] / BITS_PER_BLOCK;
+                position_within_block = data[offsets[tid] + pattern_index] % BITS_PER_BLOCK;
+
+                if (!(bitmasks1d[mask_index * 4 + block_index] >> position_within_block & 1)) {
+                    matched = false;
+                    break;
+                }
+                mask_index++;
+                continue;
+            }
+
+            // Direct character match (excluding '_')
+            if (current_pattern != '_' && 
+                data[offsets[tid] + pattern_index] != current_pattern) {
                 matched = false;
                 break;
             }
-            b++;
-            continue;
         }
 
+        // If the prefix matches, count this row as a match
+        if (matched) {
+            atomicAdd(matched_count, 1);
+        }
+        return; // No need for further checks
+    }
 
-      if (data[offsets[tid] + k + j-per] != pattern[k]) {
-       matched = false;
-       break; 
-      }
+    // Standard matching when pattern starts with '%'
+    for (int str_index = 0; str_index < sizes[tid] - p_size + per_count + 1; str_index++) {
+        bool matched = true;
+        mask_index = 0;
+
+        for (int pattern_index = match_start_index; pattern_index < p_size; pattern_index++) {
+            char current_pattern = pattern[pattern_index];
+
+            // Handle '%' wildcard by adjusting match start index and pattern offset
+            if (current_pattern == '%') {
+                match_start_index = pattern_index + 1;
+                pattern_offset++;
+                continue;
+            }
+
+            // Handle character ranges ([]) using bitmasks
+            if (current_pattern == '[') {
+                block_index = data[offsets[tid] + str_index + pattern_index - pattern_offset] / BITS_PER_BLOCK;
+                position_within_block = data[offsets[tid] + str_index + pattern_index - pattern_offset] % BITS_PER_BLOCK;
+
+                if (!(bitmasks1d[mask_index * 4 + block_index] >> position_within_block & 1)) {
+                    matched = false;
+                    break;
+                }
+                mask_index++;
+                continue;
+            }
+
+            // Direct character match (excluding '_')
+            if (current_pattern != '_' && 
+                data[offsets[tid] + str_index + pattern_index - pattern_offset] != current_pattern) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched) {
+            atomicAdd(matched_count, 1);
+            break;
+        }
     }
-    if (matched) {
-      atomicAdd(matched_count, 1);
-      break;
-    }
-  }
 }
+
 
 //bitmasks vector creation
 std::vector<std::vector<uint64_t>> createBitmasks(std::string& input){
@@ -262,94 +342,90 @@ int cpu_brute_force_noVec(gpulike::StringColumn* comments_column, std::string pa
 }
 
 
-
 int main(int argc, char* argv[]) {
 
-  if (argc < 2) {
-    std::cout << "Please provide path to string column file. eg: ./brute-force /media/db/comments.txt";
-  }
-  std::string txt_file = argv[1]; 
+    if (argc < 3) {
+        std::cout << "Usage: ./kmp <path_to_string_column_file> <pattern>\n";
+        std::cout << "Example: ./kmp /media/db/comments.txt ab%b\n";
+        return 1; // Exit with error
+    }
 
-  gpulike::StringColumn* comments_column = gpulike::read_txt(txt_file);
-  if (comments_column == nullptr) {
-    std::cout << "Unable to read comments columns, possibly no data in the file\n";
-    exit(0);
-  }
-  const std::string& main_string = comments_column->data;
-  size_t data_size = 0;
-  for (int i=0; i<comments_column->size; i++) data_size+=comments_column->sizes[i];
+    std::string txt_file = argv[1];
+    std::string pattern = argv[2]; // Pattern from command line
 
-  std::cout << "Total rows: " <<  comments_column->size << "\n";
+    gpulike::StringColumn* comments_column = gpulike::read_txt(txt_file);
+    if (comments_column == nullptr) {
+        std::cout << "Unable to read comments column, possibly no data in the file.\n";
+        return 1; // Exit with error
+    }
 
-  std::string pattern = "ab%b";
-  
-  // ok cuda doesnt suppoer bitset so use uint
-  std::vector<std::vector<uint64_t>> bitmasks=createBitmasks(pattern);
-  int *prefix=compute_prefix(pattern);
-  int cpu_matched_rows = cpu_kmp(comments_column, pattern,prefix);
+    const std::string& main_string = comments_column->data;
+    size_t data_size = 0;
+    for (int i = 0; i < comments_column->size; i++) {
+        data_size += comments_column->sizes[i];
+    }
 
+    std::cout << "Total rows: " << comments_column->size << "\n";
 
+    // Precompute KMP prefix array
+    int* prefix = compute_prefix(pattern);
 
-  std::cout << "Total matched rows in CPU kmp: " << cpu_matched_rows << "\n";
- cpu_matched_rows = cpu_brute_force_noVec(comments_column, pattern,bitmasks);
-  std::cout << "Total matched rows in CPU brute: " << cpu_matched_rows << "\n";
-  std::cout << "Now kmping in GPU\n"; 
-  int* d_sizes, *d_matched_count;
-  int* d_offsets;
-  char* d_data;
-  int * prefx;
-  char* pattrn = new char[pattern.length() + 1];
+    // CPU KMP
+    int cpu_matched_rows = cpu_kmp(comments_column, pattern, prefix);
+    std::cout << "Total matched rows in CPU KMP: " << cpu_matched_rows << "\n";
 
-    // Copy the string into the char array
-    std::strcpy(pattrn, pattern.c_str());
-//   uint64_t* bitmasks1d;
+    // CPU Brute Force
+    std::vector<std::vector<uint64_t>> bitmasks = createBitmasks(pattern);
+    cpu_matched_rows = cpu_brute_force_noVec(comments_column, pattern, bitmasks);
+    std::cout << "Total matched rows in CPU brute force: " << cpu_matched_rows << "\n";
 
-  // std::string pattern;
-//   std::vector<std::string> patterns;
-//   patterns=splitByPercentage(pattern);
-//   need to convert 2d vec to 1d for kernel
-  // get count of bitmasks
-  // size of bitmasks 256
-   
-//   std::vector<uint64_t> h_flattened;
-//   std::vector<int> h_row_sizes;
-//     for (const auto& row : bitmasks) {
-//       h_row_sizes.push_back(row.size());
-//       h_flattened.insert(h_flattened.end(), row.begin(), row.end());
-//   }
-  // for(auto a:h_flattened){
-  //   for(int i=0;i<64;i++)
-  //     std::cout<<(int)(a>>i & 1);
-  //   std::cout<<std::endl;
-  // }
+    std::cout << "Now running KMP on GPU\n";
 
-//   int total_rows = bitmasks.size();
-//   int total_elements = h_flattened.size();
-//   std::cout<<total_elements<<std::endl;
-//   cudaMalloc(&bitmasks1d, total_elements * sizeof(uint64_t));
+    // Allocate device memory
+    int* d_sizes, *d_offsets, *d_matched_count, *d_prefix;
+    char* d_data, *d_pattern;
 
-  cudaMalloc(&d_sizes, sizeof(int)*comments_column->size);
-  cudaMalloc(&d_matched_count, sizeof(int));
-  cudaMalloc(&d_offsets, sizeof(int)*comments_column->size);
-  cudaMalloc(&d_data, sizeof(char)*data_size);
-  cudaMalloc(&pattrn, sizeof(char)*pattern.length()+1);
-  cudaMalloc(&prefix,sizeof(int)*pattern.size());
-//   cudaMemcpy(bitmasks1d, h_flattened.data(), total_elements * sizeof(uint64_t), cudaMemcpyHostToDevice);
-  cudaMemcpy(prefix,prefix,sizeof(int)*pattern.size(),cudaMemcpyHostToDevice);
-  cudaMemcpy(pattrn,pattern.c_str(),sizeof(char)*pattern.length()+1,cudaMemcpyHostToDevice);
-  cudaMemcpy(d_sizes, comments_column->sizes, sizeof(int)*comments_column->size, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_offsets, comments_column->offsets, sizeof(int)*comments_column->size, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_data, comments_column->data, sizeof(char)*data_size, cudaMemcpyHostToDevice);
-  cudaMemset(d_matched_count, 0, sizeof(int));
-  CUDACHKERR();
+    cudaMalloc(&d_sizes, sizeof(int) * comments_column->size);
+    cudaMalloc(&d_offsets, sizeof(int) * comments_column->size);
+    cudaMalloc(&d_matched_count, sizeof(int));
+    cudaMalloc(&d_data, sizeof(char) * data_size);
+    cudaMalloc(&d_pattern, sizeof(char) * (pattern.size() + 1)); // Include null terminator
+    cudaMalloc(&d_prefix, sizeof(int) * pattern.size());
 
-  int TB = 32;
-  gpu_kmp<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_matched_count, prefix, pattrn,pattern.size());
-  CUDACHKERR();
-  int gpu_matched_rows = 0;
-  cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
-  CUDACHKERR();
-//   // assert(gpu_matched_rows == cpu_matched_rows);
+    // Copy data to device memory
+    cudaMemcpy(d_sizes, comments_column->sizes, sizeof(int) * comments_column->size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_offsets, comments_column->offsets, sizeof(int) * comments_column->size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data, comments_column->data, sizeof(char) * data_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pattern, pattern.c_str(), sizeof(char) * (pattern.size() + 1), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_prefix, prefix, sizeof(int) * pattern.size(), cudaMemcpyHostToDevice);
 
-  std::cout << "Result from GPU: " << gpu_matched_rows << "\n";
+    cudaMemset(d_matched_count, 0, sizeof(int));
+    CUDACHKERR();
+
+    // Launch GPU kernel
+    int TB = 32; // Threads per block
+    gpu_kmp<<<std::ceil((float)comments_column->size / (float)TB), TB>>>(d_data, d_offsets, d_sizes,
+                                                                         comments_column->size, d_matched_count, d_prefix,
+                                                                         d_pattern, pattern.size());
+    CUDACHKERR();
+
+    // Retrieve results from GPU
+    int gpu_matched_rows = 0;
+    cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
+    CUDACHKERR();
+
+    std::cout << "Result from GPU: " << gpu_matched_rows << "\n";
+
+    // Free device memory
+    cudaFree(d_sizes);
+    cudaFree(d_offsets);
+    cudaFree(d_matched_count);
+    cudaFree(d_data);
+    cudaFree(d_pattern);
+    cudaFree(d_prefix);
+
+    // Free host memory
+    delete[] prefix;
+
+    return 0;
 }

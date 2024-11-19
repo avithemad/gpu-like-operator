@@ -12,16 +12,24 @@
 #define BLOCKS_PER_MASK (BITS_IN_MASK / BITS_PER_BLOCK)
 
 // Function to create bitmasks based on a pattern string with range support
+// Function to create bitmasks based on a pattern string with range support and negation handling
 inline std::vector<std::vector<uint64_t>> createBitmasks(char* input, int& p_size) {
-    std::vector<uint64_t> mask(BLOCKS_PER_MASK, 0);  // Initialize a mask with 4 64-bit blocks
+    std::vector<uint64_t> mask(BLOCKS_PER_MASK, 0);  // Initialize a mask with BLOCKS_PER_MASK 64-bit blocks
     std::vector<std::vector<uint64_t>> bitmasks;
-    std::string s;
+    std::string s;  // Updated pattern string without ranges
+    bool negation = false;
     int block_index, position_within_block, bit;
 
     for (int i = 0; i < p_size; i++) {
-        s += input[i];
+        s += input[i];  // Add character to the updated pattern
         if (input[i] == '[') {
             i++;
+            if (input[i] == '^') {  // Check for negation
+                negation = true;
+                i++;
+            }
+
+            // Process the range or individual characters inside []
             while (input[i] != ']') {
                 if (input[i] == '-') {
                     // Handle range case (e.g., a-c)
@@ -40,15 +48,28 @@ inline std::vector<std::vector<uint64_t>> createBitmasks(char* input, int& p_siz
                 }
                 i++;
             }
+
+            if (negation) {
+                // Complement the mask to invert the bitmask
+                 for (int i = 0; i < BLOCKS_PER_MASK; i++) {
+                    mask[i] = ~mask[i];
+                }
+
+                negation = false;  // Reset negation for the next mask
+            }
+
             bitmasks.push_back(mask);  // Store the current mask
-            mask.assign(BLOCKS_PER_MASK, 0);  // Reset for next iteration
+            mask.assign(BLOCKS_PER_MASK, 0);  // Reset for the next iteration
         }
     }
 
+    // Update the pattern string and its size
     std::strcpy(input, s.c_str());
     p_size = s.size();
+
     return bitmasks;
 }
+
 
 // Function to split a pattern by the '%' character
 inline std::vector<std::string> splitByPercentage(const std::string& input) {

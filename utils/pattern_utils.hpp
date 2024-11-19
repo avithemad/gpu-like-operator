@@ -83,3 +83,28 @@ inline int count_per(const std::string& pattern) {
 }
 
 
+int* compute_prefix(const std::string& pattern) {
+    int m = pattern.size();
+    int* prefix = new int[m];  
+    int k = 0;
+    prefix[0] = 0;
+    int base=0;
+    for (int i = 1; i < m; i++) {
+        if(pattern[i]=='%'){
+              base=i+1;
+              i++;
+              k=i;
+              prefix[i]=i;
+              continue;
+          }
+        while (k > base && pattern[k] != pattern[i]) {
+            k = prefix[k - 1];
+        }
+        if (pattern[k] == pattern[i]) {
+            k++;
+        }
+        prefix[i] = k;
+    }
+
+    return prefix; 
+}

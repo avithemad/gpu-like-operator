@@ -3,10 +3,8 @@
 #include <cassert>
 #include <vector>
 #include "cudautils.cuh"
+#include "pattern_utils.hpp"
 #include <cstring> 
-#define BITS_PER_WORD 64
-#define BITS_IN_MASK 256
-#define NUM_BLOCKS (BITS_IN_MASK / BITS_PER_WORD)  // 256 bits / 64 bits = 4 blocks
 
 
 
@@ -74,59 +72,70 @@ int cpu_kmp(gpulike::StringColumn* comments_column, std::string pattern, int* pr
     return matched_rows;
 }
 
-__global__ void gpu_kmp(char* data, int* offsets, int* sizes, size_t table_size, int* matched_count,int* prefix, char* pattern,int p_size) {
-    int tid = threadIdx.x + blockDim.x*blockIdx.x;
-    if(tid >= table_size) return;
-   
-    int q=0;
-    // const char* pattern = "a";
-    int m=0,per=0,p=0,b=0,base=0;
-     for (int j=0; j<sizes[tid]; j++) {
-      if(pattern[q]=='%')
-            {
+__global__ void gpu_kmp(
+    char* data, int* offsets, int* sizes, 
+    size_t table_size, int* matched_count,
+    int* prefix, char* pattern, int p_size) {
+
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid >= table_size) return;
+
+    int q = 0; // Keeps track of the matched prefix length
+    int base = 0; // Tracks progress for subpatterns split by '%'
+
+    // Check if the pattern starts with '%' or not
+    bool starts_with_percent = (pattern[0] == '%');
+
+    // If pattern does not start with '%', perform a prefix-only match
+    if (!starts_with_percent) {
+        for (int j = 0; j < sizes[tid]; j++) {
+            while (q > 0 && pattern[q] != data[offsets[tid] + j]) {
+                q = prefix[q - 1]; // Backtrack using prefix table
+            }
+            if (pattern[q] == data[offsets[tid] + j]) {
                 q++;
-                base=q;
             }
-        while(q>base && pattern[q]!=data[offsets[tid]+j])
-            {
-                q=prefix[q-1];
+            if (q == p_size) {
+                atomicAdd(matched_count, 1);
+                return; // Exit as soon as a match is found
             }
-        if(pattern[q]==data[offsets[tid]+j])
-            q++;
-        if(q==p_size){
-            atomicAdd(matched_count, 1);
-            // std::cout<<"found at ";
-            break;
+            // If prefix doesn't match and we reach the end of the relevant substring, exit
+            if (j == p_size - 1 && q < p_size) {
+                return;
+            }
         }
-     }
-
-}
-
-int* compute_prefix(const std::string& pattern) {
-    int m = pattern.size();
-    int* prefix = new int[m];  
-    int k = 0;
-    prefix[0] = 0;
-    int base=0;
-    for (int i = 1; i < m; i++) {
-        if(pattern[i]=='%'){
-              base=i+1;
-              i++;
-              k=i;
-              prefix[i]=i;
-              continue;
-          }
-        while (k > base && pattern[k] != pattern[i]) {
-            k = prefix[k - 1];
-        }
-        if (pattern[k] == pattern[i]) {
-            k++;
-        }
-        prefix[i] = k;
+        return; // No match found, exit
     }
 
-    return prefix; 
+    // Standard KMP-based matching for patterns with '%'
+    q = 0;
+    for (int j = 0; j < sizes[tid]; j++) {
+        // Handle '%' wildcard
+        if (pattern[q] == '%') {
+            q++;
+            base = q; // Reset base to the new start after '%'
+        }
+
+        // Backtrack on mismatch
+        while (q > base && pattern[q] != data[offsets[tid] + j]) {
+            q = prefix[q - 1];
+        }
+
+        // Advance match position if characters match
+        if (pattern[q] == data[offsets[tid] + j]) {
+            q++;
+        }
+
+        // If full pattern matches, count and exit
+        if (q == p_size) {
+            atomicAdd(matched_count, 1);
+            return; // Exit as soon as a match is found
+        }
+    }
 }
+
+
+
 __global__ void gpu_brute_force_Purr(
     char* data, int* offsets,
     int* sizes, size_t table_size, 
@@ -221,125 +230,89 @@ __global__ void gpu_brute_force_Purr(
 }
 
 
-//bitmasks vector creation
-std::vector<std::vector<uint64_t>> createBitmasks(std::string& input){
-  std::vector<uint64_t> mask(NUM_BLOCKS, 0);  // Initialize a mask with 4 64-bit blocks
-  std::vector<std::vector<uint64_t>> bitmasks; // Vector to store multiple 256-bit masks
-    std::string s;
-    int block_index,bit_position,bit;
-    for (int i = 0; i < input.size(); i++) {
-        s += input[i];
-        if (input[i] == '[') {
-            i++;
-            while (input[i] != ']') {
-                if (input[i] == '-') {
-                    // Handle the range case (e.g., a-c)
-                    for (int j = input[i - 1]; j <= input[i + 1]; j++) {
-                        block_index = j / BITS_PER_WORD; // Determine which 64-bit block the bit belongs to
-                        bit_position = j % BITS_PER_WORD; // Determine the position within that block
-                        mask[block_index] |= (1ULL << bit_position); // Set the bit in the correct block
-                    }
-                    i++;
-                } else {
-                    // Set the individual bit for non-range characters
-                    bit = input[i];
-                    block_index = bit / BITS_PER_WORD;
-                    bit_position = bit % BITS_PER_WORD;
-                    mask[block_index] |= (1ULL << bit_position);
+
+
+// didnt use split subpatterns in vector
+
+int cpu_brute_force_noVec(
+    gpulike::StringColumn* comments_column, 
+    const std::string& pattern, 
+    int p_size, 
+    int per_count, 
+    const std::vector<std::vector<uint64_t>>& bitmasks) {
+    
+    int matched_rows = 0;
+    int match_start_index, pattern_offset, mask_index;
+
+    if (pattern[0]!='%') {
+        for (int i = 0; i < comments_column->size; i++) {
+            // Check only the first substring of length p_size
+            bool prefix_matched = true;
+            for (int j = 0; j < p_size; j++) {
+                if (pattern[j] != '_' && 
+                    comments_column->data[comments_column->offsets[i] + j] != pattern[j]) {
+                    prefix_matched = false;
+                    break;
                 }
-                i++;
+            }
+            if (prefix_matched) {
+                matched_rows++;
+            }
+        }
+        return matched_rows; // No need for further matching
+    }
+    for (int i = 0; i < comments_column->size; i++) {
+        match_start_index = 0; pattern_offset = 0;
+
+        // Loop through possible starting positions in the current string
+        for (int str_index = 0; str_index < (comments_column->sizes[i] - p_size + per_count + 1); str_index++) {
+            bool matched = true;
+            mask_index = 0;
+
+            // Loop through pattern characters for matching
+            for (int pattern_index = match_start_index; pattern_index < p_size; pattern_index++) {
+                char current_pattern = pattern[pattern_index];
+
+                // Handle '%' wildcard by adjusting match start index and pattern offset
+                if (current_pattern == '%') {
+                    match_start_index = pattern_index + 1;
+                    pattern_offset++;
+                    continue;
+                }
+
+                // Handle character ranges ([]) using bitmasks
+                if (current_pattern == '[') {
+                    int data_index = comments_column->data[comments_column->offsets[i] + str_index + pattern_index - pattern_offset];
+                    int block_index = data_index / BITS_PER_BLOCK;
+                    int position_within_block = data_index % BITS_PER_BLOCK;
+
+                    if (!(bitmasks[mask_index][block_index] >> position_within_block & 1)) {
+                        matched = false;
+                        break;
+                    }
+                    mask_index++;
+                    continue;
+                }
+
+                // Direct character match (excluding '_')
+                if (current_pattern != '_' && 
+                    comments_column->data[comments_column->offsets[i] + str_index + pattern_index - pattern_offset] != current_pattern) {
+                    matched = false;
+                    break;
+                }
             }
 
-            bitmasks.push_back(mask); // Store the current mask
-            mask = std::vector<uint64_t>(NUM_BLOCKS, 0); // Reset the mask for the next iteration
-        }
-    }
-    // to display bitmasks of []s
-    // for(auto a:bitmasks){
-    //   for(int i=0;i<64;i++)
-    //     std::cout<<(int)(a[1]>>i&1);
-    //   std::cout<<std::endl;
-    // }
-    input = s;
-    return bitmasks;
-}
-std::vector<std::string> splitByPercentage(const std::string& input) {
-    std::vector<std::string> patterns;
-    std::string currentPattern;
-
-    for (char c : input) {
-        if (c == '%') {
-            if(currentPattern!="")
-            // Add the current pattern to the vector, even if it's empty
-            patterns.push_back(currentPattern);
-            currentPattern.clear(); // Clear for the next Pattern
-        } else {
-            currentPattern += c; // Build the current Pattern
-        }
-    }
-    
-    // Add the last Pattern after the loop (if it's not empty)
-    if(currentPattern!="")
-    patterns.push_back(currentPattern);
-    
-    return patterns;
-}
-// didnt use split subpatterns in vector
-int cpu_brute_force_noVec(gpulike::StringColumn* comments_column, std::string pattern, std::vector<std::vector<uint64_t>> bitmasks) {
-  std::vector<std::string> patterns;int matched_rows = 0;
-
-  
-  int m=0,per=0,p=0;
-  //current mask position
-  int b=0;
-  //need % count
-  for(char c:pattern){
-    if(c=='%') p++;
-  }
-  // cpu side matching
-  for (int i=0; i<comments_column->size; i++) {
-    m=0;per=0;
-    // per to account for the % to be not included in pattern size of matching string patterns
-    for (int j=0; j<(comments_column->sizes[i] - pattern.size()+p+1 ); j++) {
-      bool matched = true;
-      b=0;
-      for (int k=0+m; k<(pattern.size()); k++) {
-        // need to account for when % is matched we set our start point from the next string pattern
-        if(pattern[k]=='%'){
-            m=k+1;
-            per++;
-            continue;
-        
-        }
-        
-        // implementation of [] range and set using bitmasks
-        if(pattern[k]=='['){
-          int num=comments_column->data[comments_column->offsets[i]+j+k-per]/BITS_PER_WORD;
-          int den=comments_column->data[comments_column->offsets[i]+j+k-per]%BITS_PER_WORD;
-            if(!(bitmasks[b][num]>>den & 1)){
-                matched = false;
+            // If pattern is fully matched, increment matched_rows and move to next row
+            if (matched) {
+                matched_rows++;
                 break;
             }
-            b++;
-            continue;
         }
-
-        if (comments_column->data[comments_column->offsets[i]+j+k-per]!=pattern[k]) 
-        {
-          matched = false;
-          break;  
-        }
-
-      }
-      if (matched) {
-        // check for next pattern
-        matched_rows++;
-        break;}
-      }
     }
-  
-  return matched_rows;
+
+    return matched_rows;
 }
+
 
 
 int main(int argc, char* argv[]) {
@@ -352,7 +325,7 @@ int main(int argc, char* argv[]) {
 
     std::string txt_file = argv[1];
     std::string pattern = argv[2]; // Pattern from command line
-
+    
     gpulike::StringColumn* comments_column = gpulike::read_txt(txt_file);
     if (comments_column == nullptr) {
         std::cout << "Unable to read comments column, possibly no data in the file.\n";
@@ -366,7 +339,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "Total rows: " << comments_column->size << "\n";
-
+    int per_count=count_per(pattern);
     // Precompute KMP prefix array
     int* prefix = compute_prefix(pattern);
 
@@ -375,8 +348,8 @@ int main(int argc, char* argv[]) {
     std::cout << "Total matched rows in CPU KMP: " << cpu_matched_rows << "\n";
 
     // CPU Brute Force
-    std::vector<std::vector<uint64_t>> bitmasks = createBitmasks(pattern);
-    cpu_matched_rows = cpu_brute_force_noVec(comments_column, pattern, bitmasks);
+    std::vector<std::vector<uint64_t>> bitmasks ;
+    cpu_matched_rows = cpu_brute_force_noVec(comments_column, pattern,pattern.size(),per_count, bitmasks);
     std::cout << "Total matched rows in CPU brute force: " << cpu_matched_rows << "\n";
 
     std::cout << "Now running KMP on GPU\n";
@@ -404,9 +377,7 @@ int main(int argc, char* argv[]) {
 
     // Launch GPU kernel
     int TB = 32; // Threads per block
-    gpu_kmp<<<std::ceil((float)comments_column->size / (float)TB), TB>>>(d_data, d_offsets, d_sizes,
-                                                                         comments_column->size, d_matched_count, d_prefix,
-                                                                         d_pattern, pattern.size());
+    gpu_kmp<<<std::ceil((float)comments_column->size / (float)TB), TB>>>(d_data, d_offsets, d_sizes,comments_column->size, d_matched_count, d_prefix,d_pattern, pattern.size());
     CUDACHKERR();
 
     // Retrieve results from GPU

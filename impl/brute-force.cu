@@ -51,31 +51,67 @@ __global__ void gpu_brute_force_Purr(
     int* matched_count, char* pattern,
     int p_size, int per_count, 
     uint64_t* bitmasks1d) {
-    
+
     int tid = threadIdx.x + blockDim.x * blockIdx.x;
     if (tid >= table_size) return;
 
-    int match_start_index = 0, pattern_offset = 0, mask_index = 0;
-    int block_index, position_within_block;
-    // Limit string checking to total length minus pattern length
-    for (int str_index = 0; str_index < sizes[tid] - p_size + per_count + 1; str_index++) {
-        bool matched = true;
-        mask_index = 0;
+    // Precompute base address for the current thread's string
+    char* string_data = data + offsets[tid];
+    int string_size = sizes[tid];
 
-        for (int pattern_index = match_start_index; pattern_index < p_size; pattern_index++) {
+    // Check if the first character is '%' or not
+    bool starts_with_percent = (pattern[0] == '%');
+
+    // If pattern does not start with '%', perform a prefix match only
+    if (!starts_with_percent) {
+        bool matched = true;
+
+        for (int pattern_index = 0; pattern_index < p_size; pattern_index++) {
             char current_pattern = pattern[pattern_index];
 
-            // Handle '%' wildcard by adjusting match start index and pattern offset
+            // Handle character ranges ([]) using bitmasks
+            if (current_pattern == '[') {
+                int char_value = string_data[pattern_index];
+                int block_index = char_value / BITS_PER_BLOCK;
+                int position_within_block = char_value % BITS_PER_BLOCK;
+
+                if (!(bitmasks1d[block_index] >> position_within_block & 1)) {
+                    matched = false;
+                    break;
+                }
+            } else if (current_pattern != '_' && string_data[pattern_index] != current_pattern) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched) {
+            atomicAdd(matched_count, 1);
+        }
+        return; // No need for further checks
+    }
+
+    // Standard matching for patterns starting with '%'
+    int max_start = string_size - p_size + per_count + 1;
+    for (int str_index = 0; str_index < max_start; str_index++) {
+        bool matched = true;
+        int pattern_offset = 0;
+        int mask_index = 0;
+
+        for (int pattern_index = 0; pattern_index < p_size; pattern_index++) {
+            char current_pattern = pattern[pattern_index];
+
+            // Handle '%' wildcard by adjusting pattern_offset
             if (current_pattern == '%') {
-                match_start_index = pattern_index + 1;
                 pattern_offset++;
                 continue;
             }
 
             // Handle character ranges ([]) using bitmasks
             if (current_pattern == '[') {
-                block_index = data[offsets[tid] + str_index + pattern_index - pattern_offset] / BITS_PER_BLOCK;
-                position_within_block = data[offsets[tid] + str_index + pattern_index - pattern_offset] % BITS_PER_BLOCK;
+                int char_value = string_data[str_index + pattern_index - pattern_offset];
+                int block_index = char_value / BITS_PER_BLOCK;
+                int position_within_block = char_value % BITS_PER_BLOCK;
 
                 if (!(bitmasks1d[mask_index * 4 + block_index] >> position_within_block & 1)) {
                     matched = false;
@@ -87,7 +123,105 @@ __global__ void gpu_brute_force_Purr(
 
             // Direct character match (excluding '_')
             if (current_pattern != '_' && 
-                data[offsets[tid] + str_index + pattern_index - pattern_offset] != current_pattern) {
+                string_data[str_index + pattern_index - pattern_offset] != current_pattern) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched) {
+            atomicAdd(matched_count, 1);
+            break;
+        }
+    }
+}
+
+__global__ void gpu_brute_force_Purr_shared(
+    char* data, int* offsets,
+    int* sizes, size_t table_size, 
+    int* matched_count, char* pattern,
+    int p_size, int per_count, 
+    uint64_t* bitmasks1d) {
+
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid >= table_size) return;
+
+    // Load the size of the current string
+    int string_size = sizes[tid];
+    char* string_data = data + offsets[tid];
+
+    // Check if the first character is '%' or not
+    bool starts_with_percent = (pattern[0] == '%');
+
+    // Shared memory optimization for pattern
+    extern __shared__ char shared_pattern[];
+    if (threadIdx.x < p_size) {
+        shared_pattern[threadIdx.x] = pattern[threadIdx.x];
+    }
+    __syncthreads();
+
+    // If pattern does not start with '%', perform a prefix match only
+    if (!starts_with_percent) {
+        bool matched = true;
+
+        for (int pattern_index = 0; pattern_index < p_size; pattern_index++) {
+            char current_pattern = shared_pattern[pattern_index];
+
+            // Handle character ranges ([]) using bitmasks
+            if (current_pattern == '[') {
+                int char_value = string_data[pattern_index];
+                int block_index = char_value / BITS_PER_BLOCK;
+                int position_within_block = char_value % BITS_PER_BLOCK;
+
+                if (!(bitmasks1d[block_index] >> position_within_block & 1)) {
+                    matched = false;
+                    break;
+                }
+            } else if (current_pattern != '_' && string_data[pattern_index] != current_pattern) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched) {
+            atomicAdd(matched_count, 1);
+        }
+        return; // No need for further checks
+    }
+
+    // Standard matching for patterns starting with '%'
+    int max_start = string_size - p_size + per_count + 1;
+    for (int str_index = 0; str_index < max_start; str_index++) {
+        bool matched = true;
+        int pattern_offset = 0;
+        int mask_index = 0;
+
+        for (int pattern_index = 0; pattern_index < p_size; pattern_index++) {
+            char current_pattern = shared_pattern[pattern_index];
+
+            // Handle '%' wildcard by adjusting pattern_offset
+            if (current_pattern == '%') {
+                pattern_offset++;
+                continue;
+            }
+
+            // Handle character ranges ([]) using bitmasks
+            if (current_pattern == '[') {
+                int char_value = string_data[str_index + pattern_index - pattern_offset];
+                int block_index = char_value / BITS_PER_BLOCK;
+                int position_within_block = char_value % BITS_PER_BLOCK;
+
+                if (!(bitmasks1d[mask_index * 4 + block_index] >> position_within_block & 1)) {
+                    matched = false;
+                    break;
+                }
+                mask_index++;
+                continue;
+            }
+
+            // Direct character match (excluding '_')
+            if (current_pattern != '_' && 
+                string_data[str_index + pattern_index - pattern_offset] != current_pattern) {
                 matched = false;
                 break;
             }
@@ -101,6 +235,7 @@ __global__ void gpu_brute_force_Purr(
 }
 
 
+
 int cpu_brute_force_noVec(
     gpulike::StringColumn* comments_column, 
     const std::string& pattern, 
@@ -111,6 +246,23 @@ int cpu_brute_force_noVec(
     int matched_rows = 0;
     int match_start_index, pattern_offset, mask_index;
 
+    if (pattern[0]!='%') {
+        for (int i = 0; i < comments_column->size; i++) {
+            // Check only the first substring of length p_size
+            bool prefix_matched = true;
+            for (int j = 0; j < p_size; j++) {
+                if (pattern[j] != '_' && 
+                    comments_column->data[comments_column->offsets[i] + j] != pattern[j]) {
+                    prefix_matched = false;
+                    break;
+                }
+            }
+            if (prefix_matched) {
+                matched_rows++;
+            }
+        }
+        return matched_rows; // No need for further matching
+    }
     for (int i = 0; i < comments_column->size; i++) {
         match_start_index = 0; pattern_offset = 0;
 
@@ -232,7 +384,7 @@ int main(int argc, char* argv[]) {
   std::cout << "Total matched rows in CPU: " << cpu_matched_rows << "\n";
 
   std::cout << "Now brute forcing in GPU\n"; 
-  int* d_sizes, *d_matched_count, *d_matched_count_2,*d_matched_count_3;
+  int* d_sizes, *d_matched_count, *d_matched_count_2,*d_matched_count_3,*d_matched_count_4;
   int* d_offsets;
   char* d_data;
   uint64_t* bitmasks1d;
@@ -254,6 +406,7 @@ int main(int argc, char* argv[]) {
   cudaMalloc(&d_matched_count, sizeof(int));
   cudaMalloc(&d_matched_count_2, sizeof(int));
   cudaMalloc(&d_matched_count_3, sizeof(int));
+   cudaMalloc(&d_matched_count_4, sizeof(int));
   cudaMalloc(&d_offsets, sizeof(int)*comments_column->size);
   cudaMalloc(&d_data, sizeof(char)*data_size);
 
@@ -265,6 +418,7 @@ int main(int argc, char* argv[]) {
   cudaMemset(d_matched_count, 0, sizeof(int));
   cudaMemset(d_matched_count_2, 0, sizeof(int));
   cudaMemset(d_matched_count_3, 0, sizeof(int));
+   cudaMemset(d_matched_count_4, 0, sizeof(int));
   CUDACHKERR();
 
   int TB = 256;
@@ -275,12 +429,16 @@ int main(int argc, char* argv[]) {
   gpu_brute_force<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_pattern, p_size, d_matched_count);
   // gpu_brute_force_limited<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_pattern, p_size, d_matched_count_2);
   gpu_brute_force_Purr<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_matched_count_3,d_pattern, p_size, per_count, bitmasks1d);
+   gpu_brute_force_Purr_shared<<<std::ceil((float)comments_column->size/(float)TB), TB>>>(d_data, d_offsets, d_sizes, comments_column->size, d_matched_count_4,d_pattern, p_size, per_count, bitmasks1d);
   
   CUDACHKERR();
   cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
   std::cout << "Result from GPU: " << gpu_matched_rows << "\n";
   cudaMemcpy(&gpu_matched_rows, d_matched_count_3, sizeof(int), cudaMemcpyDeviceToHost);
   std::cout << "Result from GPU_PURR: " << gpu_matched_rows << "\n";
+  CUDACHKERR();
+  cudaMemcpy(&gpu_matched_rows, d_matched_count_4, sizeof(int), cudaMemcpyDeviceToHost); 
+    std::cout << "Result from GPU_PURR_shared: " << gpu_matched_rows << "\n";
   CUDACHKERR();
   // assert(gpu_matched_rows == cpu_matched_rows);
 

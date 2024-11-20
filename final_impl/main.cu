@@ -42,13 +42,29 @@ preprocess_data preprocess_pattern(char *pattern, int p_size) {
       std::vector<int64_t> bitmask(4, 0x0);
       i++;
       bool nt = false;
-      if (pattern[i] == '^') {nt = true; i++;}
-      while(pattern[i]!=']' && i < p_size) {
-        // todo: construct bitmasks
+      int initial_lbrace = i - 1;
+      if (pattern[i] == '^') {nt = true; i++; initial_lbrace--;}
+      int j = i, final_rbrace = p_size; // search for the final ]
+      bool rbrace_found = false;
+      while (( !rbrace_found || pattern[j]!='[') && j < p_size) {
+        if (pattern[j] == ']') {final_rbrace = j; rbrace_found = true;}
+        j++;
+      }
+      while(i < final_rbrace) {
+        if (pattern[i] == '-' && i - 1 != initial_lbrace && i+1 != final_rbrace && pattern[i-1] < pattern[i+1]) { // check for ranges
+          for (char c = pattern[i-1]; c <= pattern[i+1]; c++) {
+            int idx = c/64, offset = c%64;
+            bitmask[idx] |= ((int64_t)1 << offset);    
+          }
+          i++;
+          continue;
+        }
+        std::cout << pattern[i] << "\n";
         int idx = pattern[i]/64, offset = pattern[i]%64;
         bitmask[idx] |= ((int64_t)1 << offset);
         i++;
       }
+      i++;
       sz++;
       if (!nt)
         for (auto e: bitmask) wildcards.push_back(e);

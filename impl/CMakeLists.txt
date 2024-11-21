@@ -16,4 +16,4 @@ target_include_directories(sort-comments PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 target_include_directories(fft PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../utils)
 
 
-target_link_libraries(fft PRIVATE "/usr/local/cuda-12.6/lib64/libcufft.so")
+target_link_libraries(fft PRIVATE "/usr/local/cuda-12/lib64/libcufft.so")

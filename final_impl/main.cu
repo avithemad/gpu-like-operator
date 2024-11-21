@@ -9,84 +9,7 @@
 #include <algorithm>
 #include <chrono>
 
-struct preprocess_data {
-  std::string pattern;
-  std::vector<int> sp_sizes;
-  std::vector<int64_t> wildcards;
-  preprocess_data(std::string pattern, std::vector<int> sp_sizes, std::vector<int64_t> wildcards) :
-    pattern(pattern), sp_sizes(sp_sizes), wildcards(wildcards) {}
-  void print() {
-    std::cout << pattern << "\n";
-    std::cout << "subpattern count: " << sp_sizes.size() << "\n";
-    for (auto e: sp_sizes) {
-      std::cout << e << " ";
-    } 
-    std::cout << "\n";
-    std::cout << "bitmasks\n";
-    for (auto bm: wildcards) {
-      printf("%lx\t", bm);
-    }
-    std::cout << "\n";
-  }
-};
 
-preprocess_data preprocess_pattern(char *pattern, int p_size) {
-  std::string result = "";
-  std::vector<int> sp_sizes;
-  std::vector<int64_t> wildcards(0);
-  int prev_per = -1;
-  int sz = 0;
-  for (int i=0; i < p_size; i++) {
-    if (pattern[i] == '[') {
-      result.push_back('[');
-      std::vector<int64_t> bitmask(4, 0x0);
-      i++;
-      bool nt = false;
-      int initial_lbrace = i - 1;
-      if (pattern[i] == '^') {nt = true; i++; initial_lbrace--;}
-      int j = i, final_rbrace = p_size; // search for the final ]
-      bool rbrace_found = false;
-      while (( !rbrace_found || pattern[j]!='[') && j < p_size) {
-        if (pattern[j] == ']') {final_rbrace = j; rbrace_found = true;}
-        j++;
-      }
-      while(i < final_rbrace) {
-        if (pattern[i] == '-' && i - 1 != initial_lbrace && i+1 != final_rbrace && pattern[i-1] < pattern[i+1]) { // check for ranges
-          for (char c = pattern[i-1]; c <= pattern[i+1]; c++) {
-            int idx = c/64, offset = c%64;
-            bitmask[idx] |= ((int64_t)1 << offset);    
-          }
-          i++;
-          continue;
-        }
-        std::cout << pattern[i] << "\n";
-        int idx = pattern[i]/64, offset = pattern[i]%64;
-        bitmask[idx] |= ((int64_t)1 << offset);
-        i++;
-      }
-      i++;
-      sz++;
-      if (!nt)
-        for (auto e: bitmask) wildcards.push_back(e);
-      else 
-        for (auto e: bitmask) wildcards.push_back(0xFFFFFFFFFFFFFFFF ^ e);
-    } else if (pattern[i] == '%') {
-      sp_sizes.push_back(sz);
-      prev_per = i;
-      sz =0;
-    } else {
-      result.push_back(pattern[i]);
-      sz++;
-    }
-  }
-  if (sp_sizes.size() == 0) {
-    sp_sizes.push_back(result.size());
-    sp_sizes.push_back(-1);
-  } else {
-    sp_sizes.push_back(p_size - prev_per - 1);
-  }
-  return preprocess_data(result, sp_sizes, wildcards);
-}
 
 int main(int argc, char* argv[]) {
   if (argc < 3)
@@ -149,7 +72,7 @@ int main(int argc, char* argv[]) {
     comments_column->size, 
     d_matched_count,
     d_pattern, 
-    p_size, 
+    preprocessed_pattern.pattern.size(), 
     d_sp_sizes,
     preprocessed_pattern.sp_sizes.size(),
     d_wildcard_bm,

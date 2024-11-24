@@ -58,7 +58,9 @@ __global__ void gpu_brute_force_Purr(
     int match_start_index = 0, pattern_offset = 0, mask_index = 0;
     int block_index, position_within_block;
     bool starts_with_wildcard = (pattern[0] == '%');
+    bool ends_with_wildcard = (pattern[p_size-1] == '%');
     int search_end=starts_with_wildcard?sizes[tid] - p_size + per_count + 1:1;
+    
     // Limit string checking to total length minus pattern length
     for (int str_index = 0; str_index < search_end; str_index++) {
         bool matched = true;
@@ -69,12 +71,20 @@ __global__ void gpu_brute_force_Purr(
 
             // Handle '%' wildcard by adjusting match start index and pattern offset
             if (current_pattern == '%') {
-                match_start_index = pattern_index + 1;
+                // need to work on while opt 
+                // pattern_index++;
+                match_start_index = pattern_index+1 ;
                 pattern_offset++;
+                // current_pattern = pattern[pattern_index];
+                // skips till next pattern is match to avoid 
+                // while(data[offsets[tid] + str_index + pattern_index - pattern_offset] != current_pattern && str_index<sizes[tid]){
+                //   str_index++;
+                // }
                 if(search_end==1){
                   search_end=sizes[tid] - p_size + per_count + 1;
                 }
                 continue;
+                
             }
 
             // Handle character ranges ([]) using bitmasks
@@ -97,11 +107,42 @@ __global__ void gpu_brute_force_Purr(
                 break;
             }
         }
-
+        // ends with
+       
         if (matched) {
+          // checks if last matches
+               
+            if (!ends_with_wildcard && 
+            (str_index + p_size - match_start_index - pattern_offset) != sizes[tid]) {
+            if(pattern[p_size - 1]=='['){
+                //  printf("match\n");
+
+                block_index = data[offsets[tid] + sizes[tid] - 1]  / BITS_PER_BLOCK;
+                position_within_block = data[offsets[tid] + sizes[tid] - 1]  % BITS_PER_BLOCK;
+                if (!(bitmasks1d[--mask_index * 4 + block_index] >> position_within_block & 1)|| (!starts_with_wildcard && !pattern_offset)) {
+                str_index=search_end;    
+                    break;
+                }
+            }else if (pattern[p_size - 1] != data[offsets[tid] + sizes[tid] - 1] || (!starts_with_wildcard && !pattern_offset)) {
+                
+                // i think this avoid rerun? 
+                str_index=search_end;
+                break;
+            }
+        }
+        // printf("%d\n", (str_index + p_size - match_start_index - pattern_offset));
+        // printf("%d\n", sizes[tid]);
+        // printf("%d\n", pattern_offset);
+        // printf("%c\n", pattern[p_size - 1]);
+        
+        // printf("%c\n", data[offsets[tid] + sizes[tid] - 1] );
+        // if(pattern_offset && str_index+p_size-match_start_index - pattern_offset!=sizes[tid]-2 && !starts_with_wildcard && !ends_with_wildcard)
+        //   break;
+          // needs exactlength check
             atomicAdd(matched_count, 1);
             break;
         }
+    // printf("l1");
     }
 }
 __global__ void gpu_brute_force_Purr_shared(

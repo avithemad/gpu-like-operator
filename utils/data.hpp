@@ -3,17 +3,10 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <string.h>
+#include <math.h>
 namespace gpulike
 {
-  struct StringColumn
-  {
-    int *sizes;
-    int *offsets;
-    char *data;
-    int size;
-    StringColumn() {}
-  };
-
   /**
    * First chunk will be a 2D character matrix with warp_size * max_lens, number of elements.
    * ith string can be accesses as follows
@@ -29,27 +22,34 @@ namespace gpulike
     StringColumnPivoted() {}
   };
 
+
+  struct StringColumn
+  {
+    char *data;
+    int *sizes;
+    int64_t *offsets;
+    int64_t size;
+    StringColumn() {}
+  };
   struct StringColumnPivotedK {
-    char **data;
+    char *data;
     int max_len;
-    int size;
+    int64_t size;
     StringColumnPivotedK() {}
   };
 
   StringColumnPivotedK *convert_to_pivotedk(StringColumn *col) {
     int max_len = 0;
-    for (int i=0; i<col->size; i++) max_len = max(max_len, col->sizes[i]);
+    for (int i=0; i<col->size; i++) max_len = std::max(max_len, col->sizes[i]);
+    std::cout << "pivot conv: total allocation = " << sizeof(char)*max_len*col->size / (1024 * 1024) << "MB" << "\n";
     StringColumnPivotedK* res = new StringColumnPivotedK();
-    res->data = (char**)malloc(sizeof(char*)*max_len);
-    for (int i=0; i<max_len; i++) {
-      res->data[i] = (char*)malloc(sizeof(char)*col->size);
-      memset(res->data[i], '\0', sizeof(char)*col->size);
-    }
+    res->data = (char*)malloc(sizeof(char)*max_len*col->size);
     res->size = col->size;
     res->max_len = max_len;
-    for (int i=0; i<col->size; i++) {
-      for (int j=0; j<col->sizes[i]; j++) {
-        res->data[j][i] = col->data[col->offsets[i] + j];
+    memset(res->data, 0, sizeof(char)*max_len*col->size);
+    for (int64_t i=0; i<col->size; i++) {
+      for (int64_t j=0; j<col->sizes[i]; j++) {
+        res->data[j*col->size + i] = col->data[col->offsets[i] + j];
       }
     }
     return res;
@@ -126,40 +126,39 @@ namespace gpulike
 
   StringColumn *read_txt(std::string filepath)
   {
-    std::ifstream file(filepath);
-    if (!file.is_open())
-    {
-      std::cerr << "Failed to open file: " << filepath << std::endl;
-      return nullptr;
-    }
+    std::cout << "Reading file " << filepath << "\n";
 
-    std::stringstream buffer;
-    buffer << file.rdbuf(); // Read the file into the stringstream
-
-    file.close(); // Close the file
+    FILE *fptr = NULL;
+    fptr = fopen(filepath.c_str(), "r");
     StringColumn *result = new StringColumn();
-    int total_comments = 0;
-    for (auto c : buffer.str())
+
+    long long total_comments = 0, total_chars = 0;
+    char c;
+    while ((c = fgetc(fptr))!=EOF)
     {
       if (c == '\n')
         total_comments++;
+      else 
+        total_chars++;
     }
+    fclose(fptr);
+    std::cout << "total lines: " << total_comments << "\n";
+    std::cout << "total characters: " << total_chars << "\n";
+    std::cout << "average chars/line: " << total_chars/total_comments << "\n";
     if (total_comments == 0)
     {
       std::cout << "No data in given file: " << filepath << std::endl;
       return nullptr;
     }
     result->sizes = (int *)malloc(sizeof(int) * total_comments);
-    result->data = (char *)malloc(sizeof(char) * buffer.str().size());
-    result->offsets = (int *)malloc(sizeof(int) * total_comments);
+    result->data = (char *)malloc(sizeof(char) * total_chars);
+    result->offsets = (int64_t *)malloc(sizeof(int64_t) * total_comments);
 
-    int cur_size = 0, i = 0, j = 0;
+    int64_t cur_size = 0, i = 0, j = 0;
     result->offsets[0] = 0;
-
-    for (auto c : buffer.str())
-    {
-      if (c == '\n')
-      {
+    fptr = fopen(filepath.c_str(), "r");
+    while ((c = fgetc(fptr))!=EOF) {
+      if (c == '\n') {
         result->sizes[i] = cur_size;
         cur_size = 0;
         i++;
@@ -176,6 +175,8 @@ namespace gpulike
       }
     }
     result->size = i;
+    fclose(fptr);
+
     return result; // Return the contents as a string
   }
 }

@@ -1,7 +1,6 @@
-#include "brute_force.cuh"
-#include "brute_force_step.cuh"
-#include "kmp_basic.cuh"
-#include "kmp_step.cuh"
+#include "brute_force_pivoted.cuh"
+#include "kmp_step_pivoted.cuh"
+#include "kmp_basic_pivoted.cuh"
 #include "data.hpp"
 #include <iostream>
 #include <cassert>
@@ -27,32 +26,29 @@ int main(int argc, char* argv[]) {
     std::cout << "Unable to read comments columns, possibly no data in the file\n";
     exit(0);
   }
-  // gpulike::StringColumnPivotedK *pivoted_col = gpulike::convert_to_pivotedk(column);
-  // std::cout << "pivoted conversion done\n";
+  gpulike::StringColumnPivotedK *pivoted_col = gpulike::convert_to_pivotedk(column);
+  std::cout << "pivoted conversion done\n";
 
-  const std::string& main_string = column->data;
-  size_t data_size = 0;
-  for (int i=0; i<column->size; i++) data_size+=column->sizes[i];
+  free(column->data);
+  free(column->offsets);
 
-  std::cout << "Total rows: " <<  column->size << "\n";
+  std::cout << "Total rows: " <<  pivoted_col->size << "\n";
 
   // std::vector<std::string> pats = {"%ry%", "%nd%", "%en%", "%es", "%ly%", "%express%dependencies%", "%requests%ly%"};
   std::vector<std::string> pats = {"%es%", "%requests%ly%"};
   // std::vector<std::string> pats = {"%express%dependencies%", "%requests%ly%"};
 
-  int* d_sizes, *d_matched_count, *d_sp_sizes;
-  int64_t *d_offsets;
+  int *d_matched_count, *d_sp_sizes, *d_sizes;
   int* d_prefix_table, *d_prefix_table_sizes;
   int64_t *d_wildcard_bm;
   char* d_data;
   char* d_pattern;
-  cudaMalloc(&d_sizes, sizeof(int)*column->size);
-  cudaMalloc(&d_offsets, sizeof(int64_t)*column->size);
-  cudaMalloc(&d_data, sizeof(char)*data_size);
+  cudaMalloc(&d_sizes, sizeof(int)*pivoted_col->size);
+  cudaMalloc(&d_data, sizeof(char)*pivoted_col->max_len*pivoted_col->size);
   cudaMalloc(&d_matched_count, sizeof(int));
-  cudaMemcpy(d_sizes, column->sizes, sizeof(int)*column->size, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_offsets, column->offsets, sizeof(int64_t)*column->size, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_data, column->data, sizeof(char)*data_size, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_sizes, column->sizes, sizeof(int)*pivoted_col->size, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_data, pivoted_col->data, sizeof(char)*pivoted_col->max_len*pivoted_col->size, cudaMemcpyHostToDevice);
+
   for (auto pat: pats) {
     char* pattern = (char*)malloc(sizeof(char) * pat.size() );
     for (int i=0; i<pat.size(); i++) pattern[i] = pat[i];
@@ -60,47 +56,44 @@ int main(int argc, char* argv[]) {
 
     int p_size = pat.size(); 
 
-    // preprocess the pattern
-    auto preprocessed_pattern = preprocess_pattern(pattern, p_size);
-    preprocessed_pattern.print();
+  // preprocess the pattern
+  auto preprocessed_pattern = preprocess_pattern(pattern, p_size);
+  preprocessed_pattern.print();
 
 
-    
-    cudaMalloc(&d_pattern, sizeof(char)*p_size);
-    cudaMalloc(&d_sp_sizes, sizeof(int)*preprocessed_pattern.sp_sizes.size());
-    cudaMalloc(&d_wildcard_bm, sizeof(int64_t)*preprocessed_pattern.wildcards.size());
-    cudaMalloc(&d_prefix_table, sizeof(int)*preprocessed_pattern.prefix_tables_gpu.size());
-    cudaMalloc(&d_prefix_table_sizes, sizeof(int)*preprocessed_pattern.prefix_tables_gpu_sizes.size());
+  cudaMalloc(&d_pattern, sizeof(char)*p_size);
+  cudaMalloc(&d_sp_sizes, sizeof(int)*preprocessed_pattern.sp_sizes.size());
+  cudaMalloc(&d_wildcard_bm, sizeof(int64_t)*preprocessed_pattern.wildcards.size());
+  cudaMalloc(&d_prefix_table, sizeof(int)*preprocessed_pattern.prefix_tables_gpu.size());
+  cudaMalloc(&d_prefix_table_sizes, sizeof(int)*preprocessed_pattern.prefix_tables_gpu_sizes.size());
 
-    cudaMemcpy(d_sp_sizes, preprocessed_pattern.sp_sizes.data(), 
-      sizeof(int)*preprocessed_pattern.sp_sizes.size(), 
-      cudaMemcpyHostToDevice);
-    cudaMemcpy(d_wildcard_bm, preprocessed_pattern.wildcards.data(), 
-      sizeof(int64_t)*preprocessed_pattern.wildcards.size(), 
-      cudaMemcpyHostToDevice);
-    cudaMemcpy(d_pattern, preprocessed_pattern.pattern.c_str(), 
-      sizeof(char)*preprocessed_pattern.pattern.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_prefix_table, preprocessed_pattern.prefix_tables_gpu.data(), 
-      sizeof(int)*preprocessed_pattern.prefix_tables_gpu.size(), 
-      cudaMemcpyHostToDevice);
-    cudaMemcpy(d_prefix_table_sizes, preprocessed_pattern.prefix_tables_gpu_sizes.data(), 
-      sizeof(int)*preprocessed_pattern.prefix_tables_gpu_sizes.size(), 
-      cudaMemcpyHostToDevice);
+  cudaMemcpy(d_sp_sizes, preprocessed_pattern.sp_sizes.data(), 
+    sizeof(int)*preprocessed_pattern.sp_sizes.size(), 
+    cudaMemcpyHostToDevice);
+  cudaMemcpy(d_wildcard_bm, preprocessed_pattern.wildcards.data(), 
+    sizeof(int64_t)*preprocessed_pattern.wildcards.size(), 
+    cudaMemcpyHostToDevice);
+  cudaMemcpy(d_pattern, preprocessed_pattern.pattern.c_str(), 
+    sizeof(char)*preprocessed_pattern.pattern.size(), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_prefix_table, preprocessed_pattern.prefix_tables_gpu.data(), 
+    sizeof(int)*preprocessed_pattern.prefix_tables_gpu.size(), 
+    cudaMemcpyHostToDevice);
+  cudaMemcpy(d_prefix_table_sizes, preprocessed_pattern.prefix_tables_gpu_sizes.data(), 
+    sizeof(int)*preprocessed_pattern.prefix_tables_gpu_sizes.size(), 
+    cudaMemcpyHostToDevice);
 
-    CUDACHKERR();
+  CUDACHKERR();
 
-    // int TB = 256;
-    std::vector<int> TBs = {256, 512};
-    for (auto TB: TBs) {
-      std::cout << "Using thread block size: " << TB << std::endl;
+  // int TB = 256;
+  std::vector<int> TBs = {256};
+  for (auto TB: TBs) {
+    std::cout << "Using thread block size: " << TB << std::endl;
     int gpu_matched_rows = 0;
-
     cudaMemset(d_matched_count, 0, sizeof(int));
-    gpu_brute_force<<<std::ceil((float)column->size/(float)TB), TB>>>(
+    gpu_brute_force_pivoted<<<std::ceil((float)column->size/(float)TB), TB>>>(
       d_data, 
-      d_offsets, 
-      d_sizes, 
-      column->size, 
+      d_sizes,
+      pivoted_col->size, 
       d_matched_count,
       d_pattern, 
       preprocessed_pattern.pattern.size(), 
@@ -117,11 +110,10 @@ int main(int argc, char* argv[]) {
     std::cout << "BRUTE FORCE: " << gpu_matched_rows << "\n";
 
     cudaMemset(d_matched_count, 0, sizeof(int));
-    gpu_brute_force_step<<<std::ceil((float)column->size/(float)TB), TB>>>(
+    gpu_brute_force_pivoted_step<<<std::ceil((float)column->size/(float)TB), TB>>>(
       d_data, 
-      d_offsets, 
-      d_sizes, 
-      column->size, 
+      d_sizes,
+      pivoted_col->size, 
       d_matched_count,
       d_pattern, 
       preprocessed_pattern.pattern.size(), 
@@ -135,12 +127,11 @@ int main(int argc, char* argv[]) {
     CUDACHKERR();
     cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
     CUDACHKERR();
-    std::cout << "BRUTE FORCE STEP: " << gpu_matched_rows << "\n";
+    std::cout << "BRUTE FORCE: " << gpu_matched_rows << "\n";
 
     cudaMemset(d_matched_count, 0, sizeof(int));
-    gpu_kmp_basic<<<std::ceil((float)column->size/(float)TB), TB>>>(
-      d_data, 
-      d_offsets, 
+    gpu_kmp_basic_pivoted<<<std::ceil((float)column->size/(float)TB), TB>>>(
+      d_data,  
       d_sizes, 
       column->size, 
       d_matched_count,
@@ -159,11 +150,10 @@ int main(int argc, char* argv[]) {
     std::cout << "KMP BASIC: " << gpu_matched_rows << "\n";
 
     cudaMemset(d_matched_count, 0, sizeof(int));
-    gpu_kmp_step<<<std::ceil((float)column->size/(float)TB), TB>>>(
+    gpu_kmp_step_pivoted<<<std::ceil((float)column->size/(float)TB), TB>>>(
       d_data, 
-      d_offsets, 
       d_sizes, 
-      column->size, 
+      pivoted_col->size, 
       d_matched_count,
       d_pattern, 
       preprocessed_pattern.pattern.size(), 
@@ -178,7 +168,7 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(&gpu_matched_rows, d_matched_count, sizeof(int), cudaMemcpyDeviceToHost);
     CUDACHKERR();
     std::cout << "KMP STEP: " << gpu_matched_rows << "\n";
-    }
-    free(pattern);
+  }
+  free(pattern);
   }
 }

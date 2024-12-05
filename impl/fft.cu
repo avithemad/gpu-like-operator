@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
+#include <cuda_fp16.h>
 #include "cudautils.cuh"
 #include "data.hpp"
 
@@ -135,14 +136,15 @@ int main(int argc, char *argv[])
     std::string txt_file = argv[1];
 
     gpulike::StringColumn *comments_column = gpulike::read_txt(txt_file);
-    char *text = "pending foxes. slyly re";
+    // char *text = "pending foxes. slyly re";
 
-    size_t text_size = 23;
-    // for (int i = 0; i < comments_column->size; i++)
-    //     text_size += comments_column->sizes[i];
-    char *pattern = "lyl";
-    size_t pattern_size = 3;
-    auto res = string_match_fft(text, text_size, pattern, pattern_size);
+    size_t text_size = 0;
+    for (int i = 0; i < comments_column->size; i++)
+        text_size += comments_column->sizes[i];
+    char *pattern = argv[2];
+    size_t pattern_size = 0;
+    for (int i=0; pattern[i]!='\0'; i++) pattern_size++;
+    auto res = string_match_fft(comments_column->data, text_size, pattern, pattern_size);
     std::cout << res.size() << " matches found\n";
     return 0;
 }

@@ -87,10 +87,17 @@ struct preprocess_data {
   std::vector<int> sp_sizes;
   std::vector<int64_t> wildcards;
   std::vector<std::vector<int>> prefix_tables;
+  std::vector<int> prefix_tables_gpu;
+  std::vector<int> prefix_tables_gpu_sizes;
   preprocess_data(std::string pattern, std::vector<int> sp_sizes, std::vector<int64_t> wildcards, std::vector<std::vector<int>> prefix_tables) :
-    pattern(pattern), sp_sizes(sp_sizes), wildcards(wildcards), prefix_tables(prefix_tables) {}
+    pattern(pattern), sp_sizes(sp_sizes), wildcards(wildcards), prefix_tables(prefix_tables) {
+      for (auto pi : prefix_tables) {
+        prefix_tables_gpu_sizes.push_back(pi.size());
+        for (auto e: pi) prefix_tables_gpu.push_back(e);
+      }
+    }
   void print() {
-    std::cout << pattern << "\n";
+    std::cout << "preprocessed pattern: " << pattern << "\n";
     std::cout << "subpattern count: " << sp_sizes.size() << "\n";
     for (auto e: sp_sizes) {
       std::cout << e << " ";
@@ -108,12 +115,17 @@ struct preprocess_data {
         std::cout << "\n";
     }
     std::cout << "\n";
+    std::cout << "prefix_tables_gpu\n";
+    for (auto e: prefix_tables_gpu) std::cout << e << "\t";
+    std::cout << "\n";
+    std::cout << "prefix_tables_gpu_sizes\n";
+    for (auto e: prefix_tables_gpu_sizes) std::cout << e << "\t";
+    std::cout << "\n";
   }
 };
 
 
 void compute_prefix_table(std::string pattern, int *prefix_table, int n) {
-    std::cout << pattern << "\n";
     for (int i = 1; i < n; ++i) {
         int j = prefix_table[i - 1]; // Initialize j with the previous prefix function value
         // Iterate backwards through possible lengths for the prefix/suffix
@@ -190,7 +202,7 @@ preprocess_data preprocess_pattern(char *pattern, int p_size) {
     for (int k=1; k<sp_sizes.size()-1; k++) {
         std::string sp;
         for (int j=i; j<i+sp_sizes[k]; j++) {
-            if (result[j] == '_' || result[j] == '[') break;
+            if (result[j] == '_' || result[j] == '[') break; // consider only first part of the pattern
             sp.push_back(result[j]);
         }
         subpatterns.push_back(sp);

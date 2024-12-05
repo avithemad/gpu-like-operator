@@ -8,13 +8,13 @@
 
 #define CHUNK_SIZE 64
 
-__global__ void multiplyFFT(float2 *p1, float2 *p2, float2 *res)
-{
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  __global__ void multiplyFFT(float2 *p1, float2 *p2, float2 *res)
+  {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-  res[tid].x = p1[tid].x * p2[threadIdx.x].x - p1[tid].y * p2[threadIdx.x].y;
-  res[tid].y = p1[tid].y * p2[threadIdx.x].x + p1[tid].x * p2[threadIdx.x].y;
-}
+    res[tid].x = p1[tid].x * p2[threadIdx.x].x - p1[tid].y * p2[threadIdx.x].y;
+    res[tid].y = p1[tid].y * p2[threadIdx.x].x + p1[tid].x * p2[threadIdx.x].y;
+  }
 
 __global__ void preparePrefix(float2 *p1, float *prefix, int size)
 {
@@ -41,19 +41,6 @@ __global__ void obtainFilterMask(float2 *convolution, float *prefix, float patte
   int tid = blockDim.x * blockIdx.x + threadIdx.x;
   if (tid >= size)
     return;
-
-  if (tid == 992125)
-  {
-    for (int i = 0; i <= CHUNK_SIZE; i++)
-    {
-      printf("%lf\t", prefix[tid * (CHUNK_SIZE+1) + i]);
-    }
-    printf("\n\n");
-    for (int i=0; i<=CHUNK_SIZE; i++) {
-      printf("%lf\t", convolution[tid * CHUNK_SIZE + i].x);
-    }
-    printf("\npattern sq: %lf\n", pattern_sq);
-  }
 
   for (int i = 0; i <= text_sizes[tid] - pattern_size + 1; i++)
   {
@@ -122,10 +109,9 @@ int main(int argc, char *argv[])
   cudaCheckErrors(cudaMemset(d_result, 0, sizeof(float2) * CHUNK_SIZE * comments_column->size));
   cudaCheckErrors(cudaMalloc(&d_poly2, sizeof(float2) * CHUNK_SIZE));
 
-  cudaCheckErrors(cudaMemcpy(d_poly1, text_poly, sizeof(float2) * CHUNK_SIZE * comments_column->size, cudaMemcpyDeviceToHost));
-  cudaCheckErrors(cudaMemcpy(d_poly1_copy, text_poly, sizeof(float2) * CHUNK_SIZE * comments_column->size, cudaMemcpyDeviceToHost));
-  cudaCheckErrors(cudaMemcpy(d_poly2, pattern_poly.data(), sizeof(float2) * CHUNK_SIZE, cudaMemcpyDeviceToHost));
-
+  cudaCheckErrors(cudaMemcpy(d_poly1, text_poly, sizeof(float2) * CHUNK_SIZE * comments_column->size, cudaMemcpyHostToDevice));
+  cudaCheckErrors(cudaMemcpy(d_poly1_copy, text_poly, sizeof(float2) * CHUNK_SIZE * comments_column->size, cudaMemcpyHostToDevice));
+  cudaCheckErrors(cudaMemcpy(d_poly2, pattern_poly.data(), sizeof(float2) * CHUNK_SIZE, cudaMemcpyHostToDevice));
   cufftHandle plan_forward_text, plan_forward_pattern, plan_inverse_text;
   cufftPlan1d(&plan_forward_text, CHUNK_SIZE, CUFFT_C2C, comments_column->size);
   cufftPlan1d(&plan_forward_pattern, CHUNK_SIZE, CUFFT_C2C, 1);
@@ -149,7 +135,7 @@ int main(int argc, char *argv[])
   for (auto p : pattern_poly)
     pattern_sq += pow(p.x, 2);
   float *d_poly1_prefix;
-  cudaCheckErrors(cudaMalloc(&d_poly1_prefix, sizeof(float) * CHUNK_SIZE * (comments_column->size + 1)));
+  cudaCheckErrors(cudaMalloc(&d_poly1_prefix, sizeof(float) * (CHUNK_SIZE + 1) * comments_column->size));
   preparePrefix<<<std::ceil(float(comments_column->size) / 256), 256>>>(d_poly1_copy, d_poly1_prefix, comments_column->size);
   int *d_text_sizes;
   bool *d_bitmask_result;
